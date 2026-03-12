@@ -55,7 +55,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </p>
             <div class="hero-actions">
               <a class="subtle-button subtle-button-primary" href="/console">
-                Open bridge console
+                打开工作流控制台
               </a>
             </div>
           </div>

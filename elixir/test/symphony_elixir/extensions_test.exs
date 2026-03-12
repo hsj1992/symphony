@@ -699,9 +699,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint([])
 
     {:ok, view, html} = live(build_conn(), "/console")
-    assert html =~ "Bridge Console"
+    assert html =~ "工作流控制台"
     assert html =~ "PROJ-101"
-    assert html =~ "Auto 15s"
+    assert html =~ "自动 15s"
 
     html =
       view
@@ -717,14 +717,14 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert html =~ "Adapter-backed status loaded successfully"
     assert html =~ "validation_passed"
-    assert html =~ "Append instruction"
+    assert html =~ "追加指令"
 
     pause_html =
       view
       |> element("#pause-run")
       |> render_click()
 
-    assert pause_html =~ "Pause recorded"
+    assert pause_html =~ "已记录暂停请求"
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do

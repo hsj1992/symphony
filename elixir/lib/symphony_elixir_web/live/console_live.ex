@@ -7,16 +7,16 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   @default_refresh_ms 15_000
   @refresh_options [
-    {"Off", "off"},
+    {"关闭", "off"},
     {"15s", "15000"},
     {"30s", "30000"},
     {"60s", "60000"}
   ]
   @log_options [
-    {"No logs", "none"},
-    {"Agent logs", "agent"},
-    {"Raw logs", "raw"},
-    {"All logs", "all"}
+    {"不包含日志", "none"},
+    {"执行日志", "agent"},
+    {"原始日志", "raw"},
+    {"全部日志", "all"}
   ]
 
   @impl true
@@ -84,7 +84,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
     case String.trim(socket.assigns.issue_query) do
       "" ->
-        {:noreply, put_flash(socket, :error, "Issue key is required")}
+        {:noreply, put_flash(socket, :error, "必须先输入议题编号")}
 
       issue ->
         {:noreply,
@@ -122,7 +122,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       |> assign(:sync_linear, truthy?(sync_linear))
 
     if String.trim(socket.assigns.instruction_message) == "" do
-      {:noreply, put_flash(socket, :error, "Instruction cannot be empty")}
+      {:noreply, put_flash(socket, :error, "补充指令不能为空")}
     else
       {:noreply,
        socket
@@ -142,10 +142,10 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       <header class="hero-card">
         <div class="hero-grid">
           <div>
-            <p class="eyebrow">Symphony Console</p>
-            <h1 class="hero-title">Bridge Console</h1>
+            <p class="eyebrow">Symphony 工作流</p>
+            <h1 class="hero-title">工作流控制台</h1>
             <p class="hero-copy">
-              Independent control plane for project-local Symphony bridges. Recent runs, issue detail, and control actions all flow through the bridge API, not the business frontend or backend.
+              这是独立于业务前后端的 Symphony 工作流控制台。最近运行、议题详情和控制动作都通过 bridge API 完成，而不是嵌入到产品系统里。
             </p>
           </div>
 
@@ -156,7 +156,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
             </span>
             <span class="status-badge status-badge-offline">
               <span class="status-badge-dot"></span>
-              <%= if @refresh_interval_ms > 0, do: "Auto #{div(@refresh_interval_ms, 1000)}s", else: "Manual refresh" %>
+              <%= if @refresh_interval_ms > 0, do: "自动 #{div(@refresh_interval_ms, 1000)}s", else: "手动刷新" %>
             </span>
           </div>
         </div>
@@ -176,7 +176,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
       <%= if @error_message do %>
         <section class="error-card">
-          <h2 class="error-title">Bridge unavailable</h2>
+          <h2 class="error-title">Bridge 服务不可用</h2>
           <p class="error-copy"><%= @error_message %></p>
         </section>
       <% end %>
@@ -184,30 +184,30 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       <section class="section-card">
         <div class="section-header">
           <div>
-            <h2 class="section-title">Controls</h2>
-            <p class="section-copy">Load an issue from the bridge, tune refresh, and include doctor/workpad/log data on demand.</p>
+            <h2 class="section-title">控制面板</h2>
+            <p class="section-copy">从 bridge 加载议题，按需查看 doctor、workpad、日志，并调整刷新策略。</p>
           </div>
-          <button type="button" class="subtle-button" phx-click="refresh">Refresh now</button>
+          <button type="button" class="subtle-button" phx-click="refresh">立即刷新</button>
         </div>
 
         <form id="issue-query-form" class="toolbar-form" phx-submit="load_issue">
           <label class="toolbar-field">
-            <span>Issue</span>
-            <input class="form-input" type="text" name="issue" value={@issue_query} placeholder="PROJ-123" />
+            <span>议题编号</span>
+            <input class="form-input" type="text" name="issue" value={@issue_query} placeholder="例如 PROJ-123" />
           </label>
 
           <label class="toolbar-field">
-            <span>Branch override</span>
-            <input class="form-input" type="text" name="branch" value={@branch_override} placeholder="optional" />
+            <span>分支覆盖</span>
+            <input class="form-input" type="text" name="branch" value={@branch_override} placeholder="可选" />
           </label>
 
           <label class="toolbar-field">
-            <span>Events</span>
+            <span>事件条数</span>
             <input class="form-input" type="number" min="1" max="50" name="events" value={@events_limit} />
           </label>
 
           <label class="toolbar-field">
-            <span>Logs</span>
+            <span>日志范围</span>
             <select class="form-input" name="include_logs">
               <option :for={{label, value} <- @log_options} value={value} selected={value == @include_logs}>
                 <%= label %>
@@ -216,7 +216,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
           </label>
 
           <label class="toolbar-field">
-            <span>Auto refresh</span>
+            <span>自动刷新</span>
             <select class="form-input" name="refresh_interval" phx-change="set_refresh_interval">
               <option :for={{label, value} <- @refresh_options} value={value} selected={refresh_selected?(value, @refresh_interval_ms)}>
                 <%= label %>
@@ -226,15 +226,15 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
           <label class="checkbox-field">
             <input type="checkbox" name="doctor" value="true" checked={@include_doctor} />
-            <span>Include doctor</span>
+            <span>包含 doctor</span>
           </label>
 
           <label class="checkbox-field">
             <input type="checkbox" name="workpad" value="true" checked={@include_workpad} />
-            <span>Include workpad</span>
+            <span>包含 workpad</span>
           </label>
 
-          <button type="submit" class="subtle-button subtle-button-primary">Load issue</button>
+          <button type="submit" class="subtle-button subtle-button-primary">加载议题</button>
         </form>
       </section>
 
@@ -242,22 +242,22 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         <section class="section-card">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Recent runs</h2>
-              <p class="section-copy">Project-local adapter state from `/runs`.</p>
+              <h2 class="section-title">最近运行</h2>
+              <p class="section-copy">来自项目本地 `/runs` 的 bridge 运行态。</p>
             </div>
           </div>
 
           <%= if @runs == [] do %>
-        <p class="empty-state">No recent runs returned by the bridge.</p>
+        <p class="empty-state">bridge 还没有返回最近运行数据。</p>
           <% else %>
             <div class="table-wrap">
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th>Issue</th>
-                    <th>Phase</th>
-                    <th>Route</th>
-                    <th>Updated</th>
+                    <th>议题</th>
+                    <th>阶段</th>
+                    <th>路由</th>
+                    <th>更新时间</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -272,9 +272,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                         <%= field(run, "issue") %>
                       </button>
                     </td>
-                    <td><span class={state_badge_class(field(run, "phase"))}><%= field(run, "phase") || "n/a" %></span></td>
-                    <td><%= field(run, "route_hint") || "n/a" %></td>
-                    <td class="mono"><%= field(run, "updated_at") || "n/a" %></td>
+                    <td><span class={state_badge_class(field(run, "phase"))}><%= field(run, "phase") || "未提供" %></span></td>
+                    <td><%= field(run, "route_hint") || "未提供" %></td>
+                    <td class="mono"><%= field(run, "updated_at") || "未提供" %></td>
                   </tr>
                 </tbody>
               </table>
@@ -285,57 +285,57 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         <section class="section-card">
           <div class="section-header">
             <div>
-              <h2 class="section-title">Run detail</h2>
-              <p class="section-copy">Loaded from `/status` for the selected issue.</p>
+              <h2 class="section-title">运行详情</h2>
+              <p class="section-copy">展示当前选中议题的 `/status` 聚合结果。</p>
             </div>
           </div>
 
           <%= if is_nil(@status) do %>
-            <p class="empty-state">Load an issue to inspect current status, checks, and actions.</p>
+            <p class="empty-state">先加载一个议题，才能查看当前状态、检查结果和控制动作。</p>
           <% else %>
             <div class="detail-grid">
               <article class="metric-card">
-                <p class="metric-label">Issue</p>
+                <p class="metric-label">议题</p>
                 <p class="metric-value"><%= field(@status, "issue") %></p>
-                <p class="metric-detail"><%= field(@status, "summary") || "n/a" %></p>
+                <p class="metric-detail"><%= field(@status, "summary") || "未提供" %></p>
               </article>
 
               <article class="metric-card">
-                <p class="metric-label">Phase</p>
-                <p class="metric-value"><%= field(@status, "phase") || "n/a" %></p>
-                <p class="metric-detail">Route hint: <%= field(@status, "route_hint") || "n/a" %></p>
+                <p class="metric-label">阶段</p>
+                <p class="metric-value"><%= field(@status, "phase") || "未提供" %></p>
+                <p class="metric-detail">路由提示：<%= field(@status, "route_hint") || "未提供" %></p>
               </article>
 
               <article class="metric-card">
-                <p class="metric-label">Branch / commit</p>
-                <p class="metric-value mono"><%= field(@status, "branch") || "n/a" %></p>
-                <p class="metric-detail mono"><%= field(@status, "commit") || "n/a" %></p>
+                <p class="metric-label">分支 / 提交</p>
+                <p class="metric-value mono"><%= field(@status, "branch") || "未提供" %></p>
+                <p class="metric-detail mono"><%= field(@status, "commit") || "未提供" %></p>
               </article>
 
               <article class="metric-card">
-                <p class="metric-label">Next</p>
-                <p class="metric-value"><%= field(@status, "next") || "n/a" %></p>
-                <p class="metric-detail">Updated: <span class="mono"><%= field(@status, "updated_at") || "n/a" %></span></p>
+                <p class="metric-label">下一步</p>
+                <p class="metric-value"><%= field(@status, "next") || "未提供" %></p>
+                <p class="metric-detail">更新时间：<span class="mono"><%= field(@status, "updated_at") || "未提供" %></span></p>
               </article>
             </div>
 
             <div class="section-stack">
               <section>
-                <h3 class="section-subtitle">Checks</h3>
+                <h3 class="section-subtitle">检查项</h3>
                 <div class="table-wrap">
                   <table class="data-table">
                     <thead>
                       <tr>
-                        <th>Check</th>
-                        <th>Status</th>
-                        <th>Summary</th>
+                        <th>检查项</th>
+                        <th>状态</th>
+                        <th>摘要</th>
                       </tr>
                     </thead>
                     <tbody>
                       <tr :for={{name, payload} <- normalized_checks(field(@status, "checks"))}>
                         <td><%= name %></td>
-                        <td><span class={state_badge_class(field(payload, "status"))}><%= field(payload, "status") || "n/a" %></span></td>
-                        <td><%= field(payload, "summary") || "n/a" %></td>
+                        <td><span class={state_badge_class(field(payload, "status"))}><%= field(payload, "status") || "未提供" %></span></td>
+                        <td><%= field(payload, "summary") || "未提供" %></td>
                       </tr>
                     </tbody>
                   </table>
@@ -343,24 +343,24 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               </section>
 
               <section>
-                <h3 class="section-subtitle">Latest events</h3>
+                <h3 class="section-subtitle">最新事件</h3>
                 <%= if normalized_events(field(@status, "latest_events")) == [] do %>
-                  <p class="empty-state">No events returned.</p>
+                  <p class="empty-state">当前没有返回事件。</p>
                 <% else %>
                   <div class="table-wrap">
                     <table class="data-table">
                       <thead>
                         <tr>
-                          <th>Time</th>
-                          <th>Type</th>
-                          <th>Summary</th>
+                          <th>时间</th>
+                          <th>类型</th>
+                          <th>摘要</th>
                         </tr>
                       </thead>
                       <tbody>
                         <tr :for={event <- normalized_events(field(@status, "latest_events"))}>
-                          <td class="mono"><%= field(event, "ts") || "n/a" %></td>
-                          <td><%= field(event, "type") || "n/a" %></td>
-                          <td><%= field(event, "summary") || "n/a" %></td>
+                          <td class="mono"><%= field(event, "ts") || "未提供" %></td>
+                          <td><%= field(event, "type") || "未提供" %></td>
+                          <td><%= field(event, "summary") || "未提供" %></td>
                         </tr>
                       </tbody>
                     </table>
@@ -369,43 +369,43 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               </section>
 
               <section>
-                <h3 class="section-subtitle">Actions</h3>
+                <h3 class="section-subtitle">控制动作</h3>
                 <div class="action-row">
-                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause">Pause</button>
-                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume">Continue</button>
+                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause">暂停</button>
+                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume">继续</button>
                 </div>
 
                 <form id="instruction-form" class="instruction-form" phx-submit="append_instruction">
                   <label class="toolbar-field toolbar-field-full">
-                    <span>Append instruction</span>
+                    <span>补充指令</span>
                     <textarea
                       class="form-input form-textarea"
                       name="message"
-                      placeholder="Add a new instruction for this run"
+                      placeholder="为当前运行补充新的执行指令"
                     ><%= @instruction_message %></textarea>
                   </label>
 
                   <label class="checkbox-field">
                     <input type="checkbox" name="sync_linear" value="true" checked={@sync_linear} />
-                    <span>Sync to Linear</span>
+                    <span>同步到 Linear</span>
                   </label>
 
-                  <button type="submit" class="subtle-button subtle-button-primary">Append instruction</button>
+                  <button type="submit" class="subtle-button subtle-button-primary">追加指令</button>
                 </form>
               </section>
 
               <section :if={present?(field(@status, "doctor"))}>
-                <h3 class="section-subtitle">Doctor</h3>
+                <h3 class="section-subtitle">Doctor 检查</h3>
                 <pre class="code-panel"><%= inspect(field(@status, "doctor"), pretty: true, limit: :infinity) %></pre>
               </section>
 
               <section :if={present?(field(@status, "workpad"))}>
-                <h3 class="section-subtitle">Workpad</h3>
+                <h3 class="section-subtitle">Workpad 工作面板</h3>
                 <pre class="code-panel"><%= inspect(field(@status, "workpad"), pretty: true, limit: :infinity) %></pre>
               </section>
 
               <section :if={present?(field(@status, "logs"))}>
-                <h3 class="section-subtitle">Logs</h3>
+                <h3 class="section-subtitle">日志</h3>
                 <pre class="code-panel"><%= inspect(field(@status, "logs"), pretty: true, limit: :infinity) %></pre>
               </section>
             </div>
@@ -463,7 +463,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   end
 
   defp perform_action(%{assigns: %{selected_issue: nil}} = socket, _params) do
-    put_flash(socket, :error, "Load an issue before triggering actions")
+    put_flash(socket, :error, "触发控制动作前，必须先加载一个议题")
   end
 
   defp perform_action(socket, params) do
@@ -494,8 +494,8 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     Application.get_env(:symphony_elixir, :console_client_module, SymphonyElixir.ConsoleClient)
   end
 
-  defp adapter_label(nil), do: "Adapter"
-  defp adapter_label(meta), do: field(meta, "repo_name") || field(meta, "repo_key") || "Adapter"
+  defp adapter_label(nil), do: "项目"
+  defp adapter_label(meta), do: field(meta, "repo_name") || field(meta, "repo_key") || "项目"
 
   defp refresh_selected?(value, refresh_interval_ms) do
     selected =
@@ -508,10 +508,10 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     value == selected
   end
 
-  defp action_success_message("pause"), do: "Pause recorded"
-  defp action_success_message("resume"), do: "Continue recorded"
-  defp action_success_message("instruction"), do: "Instruction appended"
-  defp action_success_message(_action), do: "Action recorded"
+  defp action_success_message("pause"), do: "已记录暂停请求"
+  defp action_success_message("resume"), do: "已记录继续请求"
+  defp action_success_message("instruction"), do: "已追加指令"
+  defp action_success_message(_action), do: "已记录动作"
 
   defp normalized_checks(nil), do: []
   defp normalized_checks(checks) when is_map(checks), do: Enum.sort_by(checks, fn {key, _value} -> to_string(key) end)
@@ -528,12 +528,12 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp field(_map, _key), do: nil
 
   defp error_message(:not_configured),
-    do: "Set SYMPHONY_CONSOLE_ADAPTER_BASE_URL and SYMPHONY_CONSOLE_ADAPTER_TOKEN before using the bridge console."
+    do: "使用控制台前，请先配置 SYMPHONY_CONSOLE_ADAPTER_BASE_URL 和 SYMPHONY_CONSOLE_ADAPTER_TOKEN。"
 
   defp error_message({:http_error, status, body}),
-    do: "Adapter request failed with HTTP #{status}: #{inspect(body)}"
+    do: "Bridge 请求失败，HTTP #{status}: #{inspect(body)}"
 
-  defp error_message(reason), do: "Adapter request failed: #{inspect(reason)}"
+  defp error_message(reason), do: "Bridge 请求失败: #{inspect(reason)}"
 
   defp state_badge_class(value) when value in [nil, ""], do: "state-badge"
 
