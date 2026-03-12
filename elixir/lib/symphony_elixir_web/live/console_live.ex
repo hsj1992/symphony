@@ -193,7 +193,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         <form id="issue-query-form" class="toolbar-form" phx-submit="load_issue">
           <label class="toolbar-field">
             <span>Issue</span>
-            <input class="form-input" type="text" name="issue" value={@issue_query} placeholder="CNS-123" />
+            <input class="form-input" type="text" name="issue" value={@issue_query} placeholder="PROJ-123" />
           </label>
 
           <label class="toolbar-field">

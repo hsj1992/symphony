@@ -81,9 +81,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     def meta do
       {:ok,
        %{
-         "repo_key" => "cnsdigital",
-         "repo_name" => "CNSdigital",
-         "issue_prefix" => "CNS",
+         "repo_key" => "sample-project",
+         "repo_name" => "Sample Project",
+         "issue_prefix" => "PROJ",
          "supports" => %{
            "recent_runs" => true,
            "doctor" => true,
@@ -99,7 +99,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok,
        [
          %{
-           "issue" => "CNS-101",
+           "issue" => "PROJ-101",
            "phase" => "validation",
            "route_hint" => "Merging",
            "updated_at" => "2026-03-12T15:00:00+08:00"
@@ -115,7 +115,7 @@ defmodule SymphonyElixir.ExtensionsTest do
          "summary" => "Adapter-backed status loaded successfully",
          "next" => "Wait for remote CI to finish",
          "route_hint" => "Merging",
-         "branch" => "feat/symphony-adapter-console",
+         "branch" => "feat/example-bridge-console",
          "commit" => "abcdef1",
          "updated_at" => "2026-03-12T15:10:00+08:00",
          "checks" => %{
@@ -142,12 +142,12 @@ defmodule SymphonyElixir.ExtensionsTest do
        %{
          "action" => "pause",
          "status" => %{
-           "issue" => "CNS-101",
+           "issue" => "PROJ-101",
            "phase" => "handoff",
            "summary" => "Adapter-backed status loaded successfully",
            "next" => "Wait for remote CI to finish",
            "route_hint" => "Merging",
-           "branch" => "feat/symphony-adapter-console",
+           "branch" => "feat/example-bridge-console",
            "commit" => "abcdef1",
            "updated_at" => "2026-03-12T15:10:00+08:00",
            "checks" => %{},
@@ -700,13 +700,13 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     {:ok, view, html} = live(build_conn(), "/console")
     assert html =~ "Bridge Console"
-    assert html =~ "CNS-101"
+    assert html =~ "PROJ-101"
     assert html =~ "Auto 15s"
 
     html =
       view
       |> form("#issue-query-form", %{
-        "issue" => "CNS-101",
+        "issue" => "PROJ-101",
         "branch" => "",
         "events" => "10",
         "include_logs" => "agent",
