@@ -156,28 +156,38 @@ codex:
 The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
-- LiveView adapter console at `/console`
+- LiveView bridge console at `/console`
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
 
 ### Adapter console
 
-The adapter console is intended to talk to a project-local Symphony adapter API such as the
-`/api/v1/symphony/*` endpoints added to `CNSdigital`.
+The adapter console is intended to talk to a project-local Symphony bridge. The bridge is the
+component that exposes `/api/v1/symphony/*` to the console and translates those requests into
+repo-local workflow scripts, workpad updates, and automation checks.
 
 Set these environment variables before launching Symphony if you want the standalone console to
-query and control a project adapter:
+query and control a project bridge:
 
 ```bash
-export SYMPHONY_CONSOLE_ADAPTER_BASE_URL="http://127.0.0.1:3000/api/v1/symphony"
-export SYMPHONY_CONSOLE_ADAPTER_TOKEN="replace-with-your-adapter-token"
+export SYMPHONY_CONSOLE_ADAPTER_BASE_URL="http://127.0.0.1:4211/api/v1/symphony"
+export SYMPHONY_CONSOLE_ADAPTER_TOKEN="replace-with-your-bridge-token"
 ```
+
+For the `CNSdigital` split deployment used in this workspace, the recommended topology is:
+
+- `Symphony console` on `http://127.0.0.1:4100`
+- `symphony-bridge` on `http://127.0.0.1:4211`
+- project-local scripts and `runs/*` mounted into the bridge container
+
+That keeps the business frontend and backend free of Symphony-specific UI and API surfaces while
+still letting the console inspect and control project workflow state.
 
 Then open:
 
 - `http://127.0.0.1:<port>/` for runtime observability
-- `http://127.0.0.1:<port>/console` for the adapter-backed console
+- `http://127.0.0.1:<port>/console` for the bridge-backed console
 
 ## Project Layout
 

@@ -1,6 +1,6 @@
 defmodule SymphonyElixir.ConsoleClient do
   @moduledoc """
-  HTTP client for project-local Symphony adapter endpoints.
+  HTTP client for project-local Symphony bridge endpoints.
   """
 
   @type adapter_config :: %{
