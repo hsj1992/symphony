@@ -77,14 +77,101 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
   end
 
+  defmodule FakeConsoleClient do
+    def meta do
+      {:ok,
+       %{
+         "repo_key" => "cnsdigital",
+         "repo_name" => "CNSdigital",
+         "issue_prefix" => "CNS",
+         "supports" => %{
+           "recent_runs" => true,
+           "doctor" => true,
+           "workpad" => true,
+           "actions" => true
+         },
+         "default_event_limit" => 10,
+         "default_refresh_seconds" => 15
+       }}
+    end
+
+    def list_runs(_limit) do
+      {:ok,
+       [
+         %{
+           "issue" => "CNS-101",
+           "phase" => "validation",
+           "route_hint" => "Merging",
+           "updated_at" => "2026-03-12T15:00:00+08:00"
+         }
+       ]}
+    end
+
+    def get_status(issue_identifier, _opts) do
+      {:ok,
+       %{
+         "issue" => issue_identifier,
+         "phase" => "handoff",
+         "summary" => "Adapter-backed status loaded successfully",
+         "next" => "Wait for remote CI to finish",
+         "route_hint" => "Merging",
+         "branch" => "feat/symphony-adapter-console",
+         "commit" => "abcdef1",
+         "updated_at" => "2026-03-12T15:10:00+08:00",
+         "checks" => %{
+           "local_validation" => %{
+             "status" => "passed",
+             "summary" => "Dry-run validation passed"
+           }
+         },
+         "latest_events" => [
+           %{
+             "ts" => "2026-03-12T15:08:00+08:00",
+             "type" => "validation_passed",
+             "summary" => "Adapter validation passed"
+           }
+         ],
+         "doctor" => %{"overall_ok" => true},
+         "workpad" => %{"summary" => "Current Status is fresh"},
+         "logs" => %{"agent" => "latest agent log line"}
+       }}
+    end
+
+    def create_action(_payload) do
+      {:ok,
+       %{
+         "action" => "pause",
+         "status" => %{
+           "issue" => "CNS-101",
+           "phase" => "handoff",
+           "summary" => "Adapter-backed status loaded successfully",
+           "next" => "Wait for remote CI to finish",
+           "route_hint" => "Merging",
+           "branch" => "feat/symphony-adapter-console",
+           "commit" => "abcdef1",
+           "updated_at" => "2026-03-12T15:10:00+08:00",
+           "checks" => %{},
+           "latest_events" => []
+         }
+       }}
+    end
+  end
+
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
+    console_client_module = Application.get_env(:symphony_elixir, :console_client_module)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
         Application.delete_env(:symphony_elixir, :linear_client_module)
       else
         Application.put_env(:symphony_elixir, :linear_client_module, linear_client_module)
+      end
+
+      if is_nil(console_client_module) do
+        Application.delete_env(:symphony_elixir, :console_client_module)
+      else
+        Application.put_env(:symphony_elixir, :console_client_module, console_client_module)
       end
     end)
 
@@ -605,6 +692,39 @@ defmodule SymphonyElixir.ExtensionsTest do
     {:ok, _view, html} = live(build_conn(), "/")
     assert html =~ "Snapshot unavailable"
     assert html =~ "snapshot_unavailable"
+  end
+
+  test "adapter console liveview renders recent runs and supports control actions" do
+    Application.put_env(:symphony_elixir, :console_client_module, FakeConsoleClient)
+    start_test_endpoint([])
+
+    {:ok, view, html} = live(build_conn(), "/console")
+    assert html =~ "Adapter Console"
+    assert html =~ "CNS-101"
+    assert html =~ "Auto 15s"
+
+    html =
+      view
+      |> form("#issue-query-form", %{
+        "issue" => "CNS-101",
+        "branch" => "",
+        "events" => "10",
+        "include_logs" => "agent",
+        "doctor" => "true",
+        "workpad" => "true"
+      })
+      |> render_submit()
+
+    assert html =~ "Adapter-backed status loaded successfully"
+    assert html =~ "validation_passed"
+    assert html =~ "Append instruction"
+
+    pause_html =
+      view
+      |> element("#pause-run")
+      |> render_click()
+
+    assert pause_html =~ "Pause recorded"
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
