@@ -153,9 +153,28 @@ codex:
 The observability UI now runs on a minimal Phoenix stack:
 
 - LiveView for the dashboard at `/`
+- LiveView adapter console at `/console`
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
+
+### Adapter console
+
+The adapter console is intended to talk to a project-local Symphony adapter API such as the
+`/api/v1/symphony/*` endpoints added to `CNSdigital`.
+
+Set these environment variables before launching Symphony if you want the standalone console to
+query and control a project adapter:
+
+```bash
+export SYMPHONY_CONSOLE_ADAPTER_BASE_URL="http://127.0.0.1:3000/api/v1/symphony"
+export SYMPHONY_CONSOLE_ADAPTER_TOKEN="replace-with-your-adapter-token"
+```
+
+Then open:
+
+- `http://127.0.0.1:<port>/` for runtime observability
+- `http://127.0.0.1:<port>/console` for the adapter-backed console
 
 ## Project Layout
 
