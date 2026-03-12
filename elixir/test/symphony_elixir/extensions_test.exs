@@ -694,12 +694,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "snapshot_unavailable"
   end
 
-  test "adapter console liveview renders recent runs and supports control actions" do
+  test "bridge console liveview renders recent runs and supports control actions" do
     Application.put_env(:symphony_elixir, :console_client_module, FakeConsoleClient)
     start_test_endpoint([])
 
     {:ok, view, html} = live(build_conn(), "/console")
-    assert html =~ "Adapter Console"
+    assert html =~ "Bridge Console"
     assert html =~ "CNS-101"
     assert html =~ "Auto 15s"
 

@@ -1,6 +1,6 @@
 defmodule SymphonyElixirWeb.ConsoleLive do
   @moduledoc """
-  Standalone adapter-backed console for project-local Symphony integrations.
+  Standalone bridge-backed console for project-local Symphony integrations.
   """
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
@@ -143,9 +143,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         <div class="hero-grid">
           <div>
             <p class="eyebrow">Symphony Console</p>
-            <h1 class="hero-title">Adapter Console</h1>
+            <h1 class="hero-title">Bridge Console</h1>
             <p class="hero-copy">
-              Independent control plane for project-local Symphony adapters. Recent runs, issue detail, and control actions all flow through the adapter API, not the business frontend.
+              Independent control plane for project-local Symphony bridges. Recent runs, issue detail, and control actions all flow through the bridge API, not the business frontend or backend.
             </p>
           </div>
 
@@ -176,7 +176,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
       <%= if @error_message do %>
         <section class="error-card">
-          <h2 class="error-title">Adapter unavailable</h2>
+          <h2 class="error-title">Bridge unavailable</h2>
           <p class="error-copy"><%= @error_message %></p>
         </section>
       <% end %>
@@ -185,7 +185,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         <div class="section-header">
           <div>
             <h2 class="section-title">Controls</h2>
-            <p class="section-copy">Load an issue from the adapter, tune refresh, and include doctor/workpad/log data on demand.</p>
+            <p class="section-copy">Load an issue from the bridge, tune refresh, and include doctor/workpad/log data on demand.</p>
           </div>
           <button type="button" class="subtle-button" phx-click="refresh">Refresh now</button>
         </div>
@@ -248,7 +248,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
           </div>
 
           <%= if @runs == [] do %>
-            <p class="empty-state">No recent runs returned by the adapter.</p>
+        <p class="empty-state">No recent runs returned by the bridge.</p>
           <% else %>
             <div class="table-wrap">
               <table class="data-table">
@@ -528,7 +528,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp field(_map, _key), do: nil
 
   defp error_message(:not_configured),
-    do: "Set SYMPHONY_CONSOLE_ADAPTER_BASE_URL and SYMPHONY_CONSOLE_ADAPTER_TOKEN before using the adapter console."
+    do: "Set SYMPHONY_CONSOLE_ADAPTER_BASE_URL and SYMPHONY_CONSOLE_ADAPTER_TOKEN before using the bridge console."
 
   defp error_message({:http_error, status, body}),
     do: "Adapter request failed with HTTP #{status}: #{inspect(body)}"

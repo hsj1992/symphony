@@ -55,7 +55,7 @@ defmodule SymphonyElixirWeb.DashboardLive do
             </p>
             <div class="hero-actions">
               <a class="subtle-button subtle-button-primary" href="/console">
-                Open adapter console
+                Open bridge console
               </a>
             </div>
           </div>
