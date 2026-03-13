@@ -138,6 +138,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
 
     def get_status(issue_identifier, _opts) do
+      pending_instruction = pending_instruction_state()
+
       {:ok,
        %{
          "issue" => issue_identifier,
@@ -174,6 +176,7 @@ defmodule SymphonyElixir.ExtensionsTest do
            "held_at" => nil,
            "reason" => nil
          },
+         "pending_operator_instruction" => pending_instruction,
          "checks" => %{
            "local_validation" => %{
              "status" => "passed",
@@ -204,6 +207,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       action = payload["action"] || payload[:action] || "pause"
       paused = action == "pause"
       held = action == "hold"
+      update_pending_instruction_state(action, payload)
 
       {:ok,
        %{
@@ -251,10 +255,63 @@ defmodule SymphonyElixir.ExtensionsTest do
              "held_at" => if(held, do: "2026-03-12T15:11:00+08:00", else: nil),
              "reason" => nil
            },
+           "pending_operator_instruction" => pending_instruction_state(),
            "checks" => %{},
            "latest_events" => []
          }
        }}
+    end
+
+    defp pending_instruction_state do
+      Process.get({__MODULE__, :pending_instruction})
+    end
+
+    defp update_pending_instruction_state(action, payload) do
+      message = payload["message"] || payload[:message]
+      profile = payload["profile"] || payload[:profile]
+
+      case action do
+        "instruction" when is_binary(message) and message != "" ->
+          Process.put(
+            {__MODULE__, :pending_instruction},
+            %{
+              "message" => message,
+              "profile" => profile,
+              "queued_at" => "2026-03-12T15:11:00+08:00",
+              "delivery_state" => "queued"
+            }
+          )
+
+        "steer" when is_binary(message) and message != "" ->
+          Process.put(
+            {__MODULE__, :pending_instruction},
+            %{
+              "message" => message,
+              "profile" => profile,
+              "queued_at" => "2026-03-12T15:11:00+08:00",
+              "delivery_state" => "restart_requested",
+              "restart_requested_at" => "2026-03-12T15:12:00+08:00"
+            }
+          )
+
+        "restart" ->
+          case pending_instruction_state() do
+            %{} = pending ->
+              Process.put(
+                {__MODULE__, :pending_instruction},
+                Map.merge(pending, %{
+                  "delivery_state" => "restart_requested",
+                  "restart_requested_at" => "2026-03-12T15:12:00+08:00"
+                })
+              )
+
+            _ ->
+              :ok
+          end
+
+        _ ->
+          :ok
+      end
     end
   end
 
@@ -466,6 +523,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
 
     def get_status(issue_identifier, _opts) do
+      pending_instruction = Process.get({__MODULE__, :pending_instruction})
+
       {:ok,
        %{
          "issue" => issue_identifier,
@@ -483,6 +542,7 @@ defmodule SymphonyElixir.ExtensionsTest do
          },
          "checks" => %{},
          "latest_events" => [],
+         "pending_operator_instruction" => pending_instruction,
          "doctor" => %{"overall_ok" => true},
          "workpad" => %{
            "current_status" => "- Phase: validation\n- Summary: Profile current status"
@@ -494,13 +554,60 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
 
     def create_action(payload) do
+      action = payload["action"] || payload[:action] || "instruction"
+      message = payload["message"] || payload[:message]
+      profile = payload["profile"] || payload[:profile]
+
+      case action do
+        "instruction" when is_binary(message) and message != "" ->
+          Process.put(
+            {__MODULE__, :pending_instruction},
+            %{
+              "message" => message,
+              "profile" => profile,
+              "queued_at" => "2026-03-13T18:11:00+08:00",
+              "delivery_state" => "queued"
+            }
+          )
+
+        "steer" when is_binary(message) and message != "" ->
+          Process.put(
+            {__MODULE__, :pending_instruction},
+            %{
+              "message" => message,
+              "profile" => profile,
+              "queued_at" => "2026-03-13T18:11:00+08:00",
+              "delivery_state" => "restart_requested",
+              "restart_requested_at" => "2026-03-13T18:12:00+08:00"
+            }
+          )
+
+        "restart" ->
+          case Process.get({__MODULE__, :pending_instruction}) do
+            %{} = pending ->
+              Process.put(
+                {__MODULE__, :pending_instruction},
+                Map.merge(pending, %{
+                  "delivery_state" => "restart_requested",
+                  "restart_requested_at" => "2026-03-13T18:12:00+08:00"
+                })
+              )
+
+            _ ->
+              :ok
+          end
+
+        _ ->
+          :ok
+      end
+
       if recipient = Application.get_env(:symphony_elixir, :profile_console_recipient) do
         send(recipient, {:profile_console_action, payload})
       end
 
       {:ok,
        %{
-         "action" => payload["action"] || payload[:action] || "instruction",
+         "action" => action,
          "status" => %{
            "issue" => "PROJ-101",
            "phase" => "handoff",
@@ -515,6 +622,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              "paused_at" => nil,
              "pause_reason" => nil
            },
+           "pending_operator_instruction" => Process.get({__MODULE__, :pending_instruction}),
            "checks" => %{},
            "latest_events" => []
          }
@@ -1145,6 +1253,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "worker.frontend"
     assert html =~ "追加指令"
     assert html =~ "当前状态"
+    assert html =~ "当前没有待生效指令"
 
     pause_html =
       view
@@ -1173,6 +1282,19 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> render_click()
 
     assert hold_html =~ "已挂起议题"
+
+    queued_html =
+      view
+      |> element("#instruction-form")
+      |> render_submit(%{
+        "message" => "Queue this for the next restart",
+        "sync_linear" => "true",
+        "intent" => "append"
+      })
+
+    assert queued_html =~ "已将指令排队，等待下次重启应用"
+    assert queued_html =~ "待下次重启应用"
+    assert queued_html =~ "Queue this for the next restart"
 
     logs_html =
       view
@@ -1296,7 +1418,8 @@ defmodule SymphonyElixir.ExtensionsTest do
         "intent" => "append"
       })
 
-    assert instruction_html =~ "Instruction appended"
+    assert instruction_html =~ "Instruction queued for the next restart"
+    assert instruction_html =~ "Queued"
 
     assert_receive {:profile_console_action, payload}
     assert (payload["profile"] || payload[:profile]) == "ops-triage"
@@ -1311,7 +1434,8 @@ defmodule SymphonyElixir.ExtensionsTest do
         "intent" => "steer"
       })
 
-    assert steer_html =~ "Run steer scheduled"
+    assert steer_html =~ "Instruction queued and restart requested"
+    assert steer_html =~ "Restart requested"
 
     assert_receive {:profile_console_action, steer_payload}
     assert (steer_payload["profile"] || steer_payload[:profile]) == "ops-triage"

@@ -468,6 +468,12 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 <p class="metric-value mono"><%= runtime_issue_label(field(@status, "runtime_issue"), @lang) %></p>
                 <p class="metric-detail"><%= runtime_issue_detail(field(@status, "runtime_issue"), @lang) %></p>
               </article>
+
+              <article class="metric-card">
+                <p class="metric-label"><%= tr(@lang, "Operator instruction", "操作指令") %></p>
+                <p class="metric-value"><%= pending_instruction_label(field(@status, "pending_operator_instruction"), @lang) %></p>
+                <p class="metric-detail"><%= pending_instruction_detail(field(@status, "pending_operator_instruction"), @lang) %></p>
+              </article>
             </div>
 
             <div class="section-stack">
@@ -527,7 +533,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
                 <form id="instruction-form" class="instruction-form" phx-submit="instruction_action">
                   <label class="toolbar-field toolbar-field-full">
-                    <span><%= tr(@lang, "Append instruction", "补充指令") %></span>
+                    <span><%= tr(@lang, "Operator instruction", "操作指令") %></span>
                     <textarea
                       class="form-input form-textarea"
                       name="message"
@@ -544,6 +550,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                     <button type="submit" name="intent" value="append" class="subtle-button subtle-button-primary" disabled={action_disabled?(@status, "instruction")}><%= tr(@lang, "Append instruction", "追加指令") %></button>
                     <button id="steer-run" type="submit" name="intent" value="steer" class="subtle-button" disabled={action_disabled?(@status, "steer")}><%= tr(@lang, "Steer run", "引导运行") %></button>
                   </div>
+                  <p class="section-copy action-copy">
+                    <%= tr(@lang, "Append queues operator input for the next restart. Steer queues it and immediately requests a restart path.", "追加指令只会排队等待下次重启应用；引导运行会排队这条指令并立即请求重启路径。") %>
+                  </p>
                 </form>
               </section>
 
@@ -949,8 +958,8 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp action_success_message(lang, "hold"), do: tr(lang, "Issue hold applied", "已挂起议题")
   defp action_success_message(lang, "release"), do: tr(lang, "Issue hold released", "已解除挂起")
   defp action_success_message(lang, "restart"), do: tr(lang, "Restart scheduled", "已安排重启")
-  defp action_success_message(lang, "instruction"), do: tr(lang, "Instruction appended", "已追加指令")
-  defp action_success_message(lang, "steer"), do: tr(lang, "Run steer scheduled", "已安排引导运行")
+  defp action_success_message(lang, "instruction"), do: tr(lang, "Instruction queued for the next restart", "已将指令排队，等待下次重启应用")
+  defp action_success_message(lang, "steer"), do: tr(lang, "Instruction queued and restart requested", "已排队指令，并请求重启应用")
   defp action_success_message(lang, _action), do: tr(lang, "Action recorded", "已记录动作")
 
   defp normalized_checks(nil), do: []
@@ -1193,6 +1202,63 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp runtime_issue_detail(_runtime_issue, lang),
     do: tr(lang, "Load a running issue to inspect live session metadata.", "加载一个运行中的议题后，可在这里看到实时会话元数据。")
 
+  defp pending_instruction_label(nil, lang), do: tr(lang, "None queued", "当前没有待生效指令")
+
+  defp pending_instruction_label(pending_instruction, lang) when is_map(pending_instruction) do
+    case field(pending_instruction, "delivery_state") do
+      "restart_requested" -> tr(lang, "Restart requested", "已请求重启应用")
+      _ -> tr(lang, "Queued", "待下次重启应用")
+    end
+  end
+
+  defp pending_instruction_label(_pending_instruction, lang), do: tr(lang, "None queued", "当前没有待生效指令")
+
+  defp pending_instruction_detail(nil, lang),
+    do: tr(lang, "Append or steer a run to queue the next operator instruction.", "通过追加指令或引导运行，把新的操作指令排队到下一次重启。")
+
+  defp pending_instruction_detail(pending_instruction, lang) when is_map(pending_instruction) do
+    message = blank_to_nil(field(pending_instruction, "message"))
+    profile = blank_to_nil(field(pending_instruction, "profile"))
+    queued_at = blank_to_nil(field(pending_instruction, "queued_at"))
+    restart_requested_at = blank_to_nil(field(pending_instruction, "restart_requested_at"))
+
+    cond do
+      message && restart_requested_at && profile ->
+        tr(
+          lang,
+          "Profile #{profile} queued at #{queued_at || "unknown"} and marked for restart at #{restart_requested_at}: #{message}",
+          "模板 #{profile} 已在 #{queued_at || "未知时间"} 排队，并于 #{restart_requested_at} 标记为重启应用：#{message}"
+        )
+
+      message && restart_requested_at ->
+        tr(
+          lang,
+          "Queued at #{queued_at || "unknown"} and marked for restart at #{restart_requested_at}: #{message}",
+          "已在 #{queued_at || "未知时间"} 排队，并于 #{restart_requested_at} 标记为重启应用：#{message}"
+        )
+
+      message && profile ->
+        tr(
+          lang,
+          "Profile #{profile} queued at #{queued_at || "unknown"}: #{message}",
+          "模板 #{profile} 已在 #{queued_at || "未知时间"} 排队：#{message}"
+        )
+
+      message ->
+        tr(
+          lang,
+          "Queued at #{queued_at || "unknown"}: #{message}",
+          "已在 #{queued_at || "未知时间"} 排队：#{message}"
+        )
+
+      true ->
+        tr(lang, "Append or steer a run to queue the next operator instruction.", "通过追加指令或引导运行，把新的操作指令排队到下一次重启。")
+    end
+  end
+
+  defp pending_instruction_detail(_pending_instruction, lang),
+    do: tr(lang, "Append or steer a run to queue the next operator instruction.", "通过追加指令或引导运行，把新的操作指令排队到下一次重启。")
+
   defp action_disabled?(nil, _action), do: true
 
   defp action_disabled?(status, "pause") do
@@ -1228,8 +1294,17 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     runtime_paused = field(field(status, "runtime_control"), "paused") in [true, "true"]
     issue_held = field(field(status, "issue_control"), "held") in [true, "true"]
     runtime_scope = runtime_scope(status)
+    pending_instruction = field(status, "pending_operator_instruction")
+    pending_message = blank_to_nil(field(pending_instruction, "message"))
+    pending_state = blank_to_nil(field(pending_instruction, "delivery_state"))
 
     cond do
+      pending_message && pending_state == "restart_requested" ->
+        tr(lang, "A queued operator instruction is already marked for the next restart path. Monitor the next run instead of re-sending it.", "当前已有一条待生效指令标记为通过下次重启应用。优先观察下一轮运行，而不是重复发送。")
+
+      pending_message ->
+        tr(lang, "A queued operator instruction is waiting for the next restart. Use Restart run or Steer run to apply it sooner.", "当前有一条待生效指令正在等待下次重启。要立即生效，请使用“重启运行”或“引导运行”。")
+
       runtime_paused ->
         tr(lang, "Runtime intake is paused. You can resume intake, hold/release the issue, or restart it for later dispatch.", "runtime intake 当前已暂停。你可以恢复 intake，也可以挂起/解除该议题，或安排它稍后重启。")
 
