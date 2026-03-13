@@ -172,6 +172,116 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              String.starts_with?(retry_entry.error, "retry poll failed:")
   end
 
+  test "issue-level hold control terminates a running worker and prevents redispatch" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil, poll_interval_ms: 50)
+
+    issue_id = "issue-hold-running"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-HOLD",
+      title: "Hold running issue",
+      description: "Hold the running worker",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-HOLD"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :IssueHoldRunningOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    worker = spawn(fn -> Process.sleep(:infinity) end)
+    ref = Process.monitor(worker)
+
+    running_entry = %{
+      pid: worker,
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-hold",
+      turn_count: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      worker_host: nil,
+      workspace_path: nil,
+      retry_attempt: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    assert %{
+             "issue_identifier" => "MT-HOLD",
+             "status" => "held",
+             "scope" => "running",
+             "operations" => ["terminate_running_agent", "hold_issue"]
+           } =
+             Orchestrator.control_issue(orchestrator_name, "MT-HOLD", "hold", "manual hold")
+             |> stringify_keys()
+
+    assert_receive {:DOWN, ^ref, :process, ^worker, _reason}, 1_000
+
+    state = :sys.get_state(pid)
+    assert state.running == %{}
+    refute MapSet.member?(state.claimed, issue_id)
+    assert %{identifier: "MT-HOLD", reason: "manual hold"} = state.held_issues[issue_id]
+    refute Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
+  test "issue-level release control removes a hold and allows dispatch eligibility" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil, poll_interval_ms: 50)
+
+    issue_id = "issue-release-held"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-RELEASE",
+      title: "Release held issue",
+      description: "Release a held issue",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-RELEASE"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :IssueReleaseHeldOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+
+    :sys.replace_state(pid, fn _ ->
+      %{initial_state | held_issues: %{issue_id => %{identifier: "MT-RELEASE", held_at: DateTime.utc_now(), reason: "manual hold"}}}
+    end)
+
+    assert %{
+             "issue_identifier" => "MT-RELEASE",
+             "status" => "active",
+             "scope" => "held",
+             "operations" => ["release_issue_hold", "poll"]
+           } =
+             Orchestrator.control_issue(orchestrator_name, "MT-RELEASE", "release", nil)
+             |> stringify_keys()
+
+    state = :sys.get_state(pid)
+    refute Map.has_key?(state.held_issues, issue_id)
+    assert Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
   test "orchestrator snapshot reflects last codex update and session id" do
     issue_id = "issue-snapshot"
 

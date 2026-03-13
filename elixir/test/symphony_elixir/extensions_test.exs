@@ -153,6 +153,12 @@ defmodule SymphonyElixir.ExtensionsTest do
            "paused_at" => nil,
            "pause_reason" => nil
          },
+         "issue_control" => %{
+           "held" => false,
+           "issue_identifier" => issue_identifier,
+           "held_at" => nil,
+           "reason" => nil
+         },
          "checks" => %{
            "local_validation" => %{
              "status" => "passed",
@@ -204,6 +210,12 @@ defmodule SymphonyElixir.ExtensionsTest do
              "paused" => true,
              "paused_at" => "2026-03-12T15:11:00+08:00",
              "pause_reason" => nil
+           },
+           "issue_control" => %{
+             "held" => false,
+             "issue_identifier" => "PROJ-101",
+             "held_at" => nil,
+             "reason" => nil
            },
            "checks" => %{},
            "latest_events" => []
@@ -912,7 +924,12 @@ defmodule SymphonyElixir.ExtensionsTest do
              %{"error" => %{"code" => "invalid_action", "message" => "Action must be pause or resume"}}
 
     assert json_response(post(build_conn(), "/api/v1/control/MT-1", %{"action" => "pause"}), 400) ==
-             %{"error" => %{"code" => "invalid_action", "message" => "Issue action must be restart"}}
+             %{
+               "error" => %{
+                 "code" => "invalid_action",
+                 "message" => "Issue action must be restart, hold, or release"
+               }
+             }
 
     assert json_response(post(build_conn(), "/api/v1/control/MT-1", %{"action" => "restart"}), 503) ==
              %{
@@ -1108,6 +1125,20 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> render_click()
 
     assert restart_html =~ "已安排重启"
+
+    hold_html =
+      view
+      |> element("#hold-run")
+      |> render_click()
+
+    assert hold_html =~ "已挂起议题"
+
+    release_html =
+      view
+      |> element("#release-run")
+      |> render_click()
+
+    assert release_html =~ "已解除挂起"
 
     logs_html =
       view

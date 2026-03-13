@@ -38,6 +38,7 @@ defmodule SymphonyElixir.Orchestrator do
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
+      held_issues: %{},
       retry_attempts: %{},
       codex_totals: nil,
       codex_rate_limits: nil,
@@ -560,13 +561,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(
          %Issue{} = issue,
-         %State{running: running, claimed: claimed} = state,
+         %State{running: running, claimed: claimed, held_issues: held_issues} = state,
          active_states,
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       !MapSet.member?(claimed, issue.id) and
+      !Map.has_key?(held_issues, issue.id) and
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running) and
@@ -834,32 +836,39 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    if state.paused do
-      {:noreply,
-       schedule_issue_retry(
-         state,
-         issue_id,
-         attempt,
-         Map.merge(metadata, %{error: "orchestrator paused", delay_type: :paused})
-       )}
-    else
-      case Tracker.fetch_candidate_issues() do
-        {:ok, issues} ->
-          issues
-          |> find_issue_by_id(issue_id)
-          |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
+    cond do
+      state.paused ->
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue_id,
+           attempt,
+           Map.merge(metadata, %{error: "orchestrator paused", delay_type: :paused})
+         )}
 
-        {:error, reason} ->
-          Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
+      issue_manually_held?(state, issue_id) ->
+        Logger.info("Skipping retry for held issue issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}")
 
-          {:noreply,
-           schedule_issue_retry(
-             state,
-             issue_id,
-             attempt + 1,
-             Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
-           )}
-      end
+        {:noreply, release_issue_claim(state, issue_id)}
+
+      true ->
+        case Tracker.fetch_candidate_issues() do
+          {:ok, issues} ->
+            issues
+            |> find_issue_by_id(issue_id)
+            |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
+
+          {:error, reason} ->
+            Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
+
+            {:noreply,
+             schedule_issue_retry(
+               state,
+               issue_id,
+               attempt + 1,
+               Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
+             )}
+        end
     end
   end
 
@@ -867,6 +876,11 @@ defmodule SymphonyElixir.Orchestrator do
     terminal_states = terminal_state_set()
 
     cond do
+      issue_manually_held?(state, issue_id) ->
+        Logger.info("Issue is manually held: issue_id=#{issue_id} issue_identifier=#{issue.identifier}; skipping retry dispatch")
+
+        {:noreply, release_issue_claim(state, issue_id)}
+
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
@@ -896,29 +910,15 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
 
-  defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
-      {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{identifier: identifier} when is_binary(identifier) ->
-            cleanup_issue_workspace(identifier)
-
-          _ ->
-            :ok
-        end)
-
-      {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
-    end
+  defp issue_manually_held?(%State{} = state, issue_id) when is_binary(issue_id) do
+    Map.has_key?(state.held_issues, issue_id)
   end
 
-  defp notify_dashboard do
-    StatusDashboard.notify_update()
-  end
+  defp issue_manually_held?(_state, _issue_id), do: false
 
   defp handle_active_retry(state, issue, attempt, metadata) do
     if retry_candidate_issue?(issue, terminal_state_set()) and
+         !issue_manually_held?(state, issue.id) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
       {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
@@ -940,6 +940,47 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp release_issue_claim(%State{} = state, issue_id) do
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
+  end
+
+  defp release_issue_claim_and_retry(%State{} = state, issue_id) do
+    state
+    |> drop_retry_attempt(issue_id)
+    |> release_issue_claim(issue_id)
+  end
+
+  defp drop_retry_attempt(%State{} = state, issue_id) do
+    case Map.get(state.retry_attempts, issue_id) do
+      %{timer_ref: timer_ref} when is_reference(timer_ref) ->
+        Process.cancel_timer(timer_ref)
+        %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}
+
+      %{timer_ref: _timer_ref} ->
+        %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}
+
+      _ ->
+        state
+    end
+  end
+
+  defp run_terminal_workspace_cleanup do
+    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
+      {:ok, issues} ->
+        issues
+        |> Enum.each(fn
+          %Issue{identifier: identifier} when is_binary(identifier) ->
+            cleanup_issue_workspace(identifier)
+
+          _ ->
+            :ok
+        end)
+
+      {:error, reason} ->
+        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+    end
+  end
+
+  defp notify_dashboard do
+    StatusDashboard.notify_update()
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
@@ -1204,7 +1245,18 @@ defmodule SymphonyElixir.Orchestrator do
        control: %{
          paused: state.paused == true,
          paused_at: control_iso8601(state.paused_at),
-         pause_reason: state.pause_reason
+         pause_reason: state.pause_reason,
+         issue_holds:
+           state.held_issues
+           |> Enum.map(fn {issue_id, hold} ->
+             %{
+               issue_id: issue_id,
+               issue_identifier: Map.get(hold, :identifier),
+               held_at: control_iso8601(Map.get(hold, :held_at)),
+               reason: Map.get(hold, :reason)
+             }
+           end)
+           |> Enum.sort_by(&(&1.issue_identifier || &1.issue_id || ""))
        },
        polling: %{
          checking?: state.poll_check_in_progress == true,
@@ -1256,6 +1308,26 @@ defmodule SymphonyElixir.Orchestrator do
     normalized_reason = normalize_control_reason(reason)
 
     case normalize_issue_control_action(action) do
+      :hold ->
+        case hold_issue(state, issue_identifier, normalized_reason, requested_at) do
+          {:ok, next_state, payload} ->
+            notify_dashboard()
+            {:reply, Map.put(payload, :requested_at, requested_at), next_state}
+
+          {:error, :issue_not_found} ->
+            {:reply, {:error, :issue_not_found}, state}
+        end
+
+      :release ->
+        case release_issue_hold(state, issue_identifier, normalized_reason, requested_at) do
+          {:ok, next_state, payload} ->
+            notify_dashboard()
+            {:reply, Map.put(payload, :requested_at, requested_at), next_state}
+
+          {:error, :issue_not_found} ->
+            {:reply, {:error, :issue_not_found}, state}
+        end
+
       :restart ->
         case restart_issue_now(state, issue_identifier, normalized_reason) do
           {:ok, next_state, payload} ->
@@ -1759,6 +1831,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_control_action("pause"), do: :pause
   defp normalize_control_action("resume"), do: :resume
 
+  defp normalize_issue_control_action("hold"), do: :hold
+  defp normalize_issue_control_action("release"), do: :release
   defp normalize_issue_control_action("restart"), do: :restart
 
   defp normalize_control_reason(reason) when is_binary(reason) do
@@ -1779,6 +1853,191 @@ defmodule SymphonyElixir.Orchestrator do
       pause_reason: state.pause_reason,
       paused_at: control_iso8601(state.paused_at)
     }
+  end
+
+  defp hold_issue(%State{} = state, issue_identifier, reason, requested_at)
+       when is_binary(issue_identifier) do
+    identifier = String.trim(issue_identifier)
+
+    case resolve_issue_control_target(state, identifier) do
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "running"} ->
+        next_state =
+          state
+          |> terminate_running_issue(issue_id, false)
+          |> put_issue_hold(issue_id, resolved_identifier, requested_at, reason)
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "hold",
+           status: "held",
+           scope: "running",
+           changed: true,
+           operations: ["terminate_running_agent", "hold_issue"],
+           reason: reason
+         }}
+
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "retrying"} ->
+        next_state =
+          state
+          |> release_issue_claim_and_retry(issue_id)
+          |> put_issue_hold(issue_id, resolved_identifier, requested_at, reason)
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "hold",
+           status: "held",
+           scope: "retrying",
+           changed: true,
+           operations: ["cancel_retry", "hold_issue"],
+           reason: reason
+         }}
+
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "held"} ->
+        {:ok, state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "hold",
+           status: "held",
+           scope: "held",
+           changed: false,
+           operations: [],
+           reason: reason || held_issue_reason(state, issue_id)
+         }}
+
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "idle"} ->
+        next_state = put_issue_hold(state, issue_id, resolved_identifier, requested_at, reason)
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "hold",
+           status: "held",
+           scope: "idle",
+           changed: true,
+           operations: ["hold_issue"],
+           reason: reason
+         }}
+
+      {:error, :issue_not_found} ->
+        {:error, :issue_not_found}
+    end
+  end
+
+  defp release_issue_hold(%State{} = state, issue_identifier, reason, requested_at)
+       when is_binary(issue_identifier) do
+    identifier = String.trim(issue_identifier)
+
+    case find_hold_entry_by_identifier(state.held_issues, identifier) do
+      %{issue_id: issue_id, identifier: resolved_identifier} ->
+        next_state =
+          state
+          |> drop_issue_hold(issue_id)
+          |> maybe_schedule_issue_release_poll()
+
+        operations =
+          if state.paused do
+            ["release_issue_hold"]
+          else
+            ["release_issue_hold", "poll"]
+          end
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "release",
+           status: "active",
+           scope: "held",
+           changed: true,
+           operations: operations,
+           reason: reason,
+           released_at: requested_at
+         }}
+
+      nil ->
+        case resolve_issue_control_target(state, identifier) do
+          {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, scope} ->
+            {:ok, state,
+             %{
+               issue_identifier: resolved_identifier,
+               issue_id: issue_id,
+               action: "release",
+               status: "active",
+               scope: scope,
+               changed: false,
+               operations: [],
+               reason: reason,
+               released_at: requested_at
+             }}
+
+          {:error, :issue_not_found} ->
+            {:error, :issue_not_found}
+        end
+    end
+  end
+
+  defp resolve_issue_control_target(%State{} = state, identifier) do
+    cond do
+      running_entry = find_running_entry_by_identifier(state.running, identifier) ->
+        {:ok, %{issue_id: running_entry.issue.id, identifier: running_entry.identifier}, "running"}
+
+      retry_entry = find_retry_entry_by_identifier(state.retry_attempts, identifier) ->
+        {:ok, %{issue_id: retry_entry.issue_id, identifier: retry_entry.identifier}, "retrying"}
+
+      hold_entry = find_hold_entry_by_identifier(state.held_issues, identifier) ->
+        {:ok, %{issue_id: hold_entry.issue_id, identifier: hold_entry.identifier}, "held"}
+
+      issue = find_candidate_issue_by_identifier(identifier) ->
+        {:ok, %{issue_id: issue.id, identifier: issue.identifier}, "idle"}
+
+      true ->
+        {:error, :issue_not_found}
+    end
+  end
+
+  defp find_candidate_issue_by_identifier(identifier) when is_binary(identifier) do
+    case Tracker.fetch_candidate_issues() do
+      {:ok, issues} ->
+        Enum.find(issues, fn
+          %Issue{identifier: ^identifier} -> true
+          _ -> false
+        end)
+
+      {:error, _reason} ->
+        nil
+    end
+  end
+
+  defp find_candidate_issue_by_identifier(_identifier), do: nil
+
+  defp put_issue_hold(%State{} = state, issue_id, identifier, held_at, reason) do
+    hold = %{
+      identifier: identifier,
+      held_at: held_at,
+      reason: reason
+    }
+
+    %{state | held_issues: Map.put(state.held_issues, issue_id, hold)}
+  end
+
+  defp drop_issue_hold(%State{} = state, issue_id) do
+    %{state | held_issues: Map.delete(state.held_issues, issue_id)}
+  end
+
+  defp maybe_schedule_issue_release_poll(%State{paused: true} = state), do: state
+  defp maybe_schedule_issue_release_poll(%State{} = state), do: schedule_tick(state, 0)
+
+  defp held_issue_reason(%State{} = state, issue_id) do
+    case Map.get(state.held_issues, issue_id) do
+      %{reason: reason} -> reason
+      _ -> nil
+    end
   end
 
   defp restart_issue_now(%State{} = state, issue_identifier, reason)
@@ -1865,6 +2124,18 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp find_retry_entry_by_identifier(_retry_attempts, _identifier), do: nil
+
+  defp find_hold_entry_by_identifier(held_issues, identifier) when is_map(held_issues) do
+    Enum.find_value(held_issues, fn
+      {issue_id, %{identifier: ^identifier} = hold_entry} ->
+        Map.put(hold_entry, :issue_id, issue_id)
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp find_hold_entry_by_identifier(_held_issues, _identifier), do: nil
 
   defp cancel_tick(%State{tick_timer_ref: nil} = state), do: state
 

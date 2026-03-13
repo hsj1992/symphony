@@ -184,6 +184,16 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   end
 
   @impl true
+  def handle_event("hold", _params, socket) do
+    {:noreply, perform_action(socket, %{"action" => "hold"})}
+  end
+
+  @impl true
+  def handle_event("release", _params, socket) do
+    {:noreply, perform_action(socket, %{"action" => "release"})}
+  end
+
+  @impl true
   def handle_event("append_instruction", %{"message" => message, "sync_linear" => sync_linear}, socket) do
     socket =
       socket
@@ -430,6 +440,12 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 <p class="metric-value"><%= runtime_label(field(@status, "runtime_control"), @lang) %></p>
                 <p class="metric-detail"><%= runtime_reason(field(@status, "runtime_control"), @lang) %></p>
               </article>
+
+              <article class="metric-card">
+                <p class="metric-label"><%= tr(@lang, "Issue control", "议题控制") %></p>
+                <p class="metric-value"><%= issue_control_label(field(@status, "issue_control"), @lang) %></p>
+                <p class="metric-detail"><%= issue_control_reason(field(@status, "issue_control"), @lang) %></p>
+              </article>
             </div>
 
             <div class="section-stack">
@@ -480,6 +496,8 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 <div class="action-row">
                   <button id="pause-run" type="button" class="subtle-button" phx-click="pause"><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
                   <button id="resume-run" type="button" class="subtle-button" phx-click="resume"><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
+                  <button id="hold-run" type="button" class="subtle-button" phx-click="hold"><%= tr(@lang, "Hold issue", "挂起议题") %></button>
+                  <button id="release-run" type="button" class="subtle-button" phx-click="release"><%= tr(@lang, "Release hold", "解除挂起") %></button>
                   <button id="restart-run" type="button" class="subtle-button" phx-click="restart"><%= tr(@lang, "Restart run", "重启运行") %></button>
                 </div>
 
@@ -900,6 +918,8 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp action_success_message(lang, "pause"), do: tr(lang, "Pause recorded", "已记录暂停请求")
   defp action_success_message(lang, "resume"), do: tr(lang, "Continue recorded", "已记录继续请求")
+  defp action_success_message(lang, "hold"), do: tr(lang, "Issue hold applied", "已挂起议题")
+  defp action_success_message(lang, "release"), do: tr(lang, "Issue hold released", "已解除挂起")
   defp action_success_message(lang, "restart"), do: tr(lang, "Restart scheduled", "已安排重启")
   defp action_success_message(lang, "instruction"), do: tr(lang, "Instruction appended", "已追加指令")
   defp action_success_message(lang, _action), do: tr(lang, "Action recorded", "已记录动作")
@@ -1044,6 +1064,43 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   end
 
   defp runtime_reason(_runtime_control, lang), do: tr(lang, "No runtime control state returned.", "当前没有返回运行时控制状态。")
+
+  defp issue_control_label(nil, lang), do: tr(lang, "Active", "活跃")
+
+  defp issue_control_label(issue_control, lang) when is_map(issue_control) do
+    if field(issue_control, "held") in [true, "true"] do
+      tr(lang, "Held", "已挂起")
+    else
+      tr(lang, "Active", "活跃")
+    end
+  end
+
+  defp issue_control_label(_issue_control, lang), do: tr(lang, "Active", "活跃")
+
+  defp issue_control_reason(nil, lang),
+    do: tr(lang, "This issue is eligible for dispatch when the runtime is active.", "该议题在 runtime 活跃时可被派发。")
+
+  defp issue_control_reason(issue_control, lang) when is_map(issue_control) do
+    held_at = blank_to_nil(field(issue_control, "held_at"))
+    reason = blank_to_nil(field(issue_control, "reason"))
+
+    cond do
+      (field(issue_control, "held") in [true, "true"] and reason) && held_at ->
+        tr(lang, "Held at #{held_at}: #{reason}", "于 #{held_at} 挂起：#{reason}")
+
+      field(issue_control, "held") in [true, "true"] and reason ->
+        tr(lang, "Held: #{reason}", "已挂起：#{reason}")
+
+      field(issue_control, "held") in [true, "true"] ->
+        tr(lang, "This issue is manually held until release is requested.", "该议题已被手动挂起，直到显式解除。")
+
+      true ->
+        tr(lang, "This issue is eligible for dispatch when the runtime is active.", "该议题在 runtime 活跃时可被派发。")
+    end
+  end
+
+  defp issue_control_reason(_issue_control, lang),
+    do: tr(lang, "This issue is eligible for dispatch when the runtime is active.", "该议题在 runtime 活跃时可被派发。")
 
   defp field(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, String.to_atom(key))
