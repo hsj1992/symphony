@@ -81,9 +81,9 @@ defmodule SymphonyElixir.ExtensionsTest do
     def meta do
       {:ok,
        %{
-         "repo_key" => "cnsdigital",
-         "repo_name" => "CNSdigital",
-         "issue_prefix" => "CNS",
+         "repo_key" => "sample-project",
+         "repo_name" => "Sample Project",
+         "issue_prefix" => "PROJ",
          "supports" => %{
            "recent_runs" => true,
            "doctor" => true,
@@ -99,7 +99,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok,
        [
          %{
-           "issue" => "CNS-101",
+           "issue" => "PROJ-101",
            "phase" => "validation",
            "route_hint" => "Merging",
            "updated_at" => "2026-03-12T15:00:00+08:00"
@@ -115,7 +115,7 @@ defmodule SymphonyElixir.ExtensionsTest do
          "summary" => "Adapter-backed status loaded successfully",
          "next" => "Wait for remote CI to finish",
          "route_hint" => "Merging",
-         "branch" => "feat/symphony-adapter-console",
+         "branch" => "feat/example-bridge-console",
          "commit" => "abcdef1",
          "updated_at" => "2026-03-12T15:10:00+08:00",
          "checks" => %{
@@ -142,12 +142,12 @@ defmodule SymphonyElixir.ExtensionsTest do
        %{
          "action" => "pause",
          "status" => %{
-           "issue" => "CNS-101",
+           "issue" => "PROJ-101",
            "phase" => "handoff",
            "summary" => "Adapter-backed status loaded successfully",
            "next" => "Wait for remote CI to finish",
            "route_hint" => "Merging",
-           "branch" => "feat/symphony-adapter-console",
+           "branch" => "feat/example-bridge-console",
            "commit" => "abcdef1",
            "updated_at" => "2026-03-12T15:10:00+08:00",
            "checks" => %{},
@@ -699,14 +699,14 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint([])
 
     {:ok, view, html} = live(build_conn(), "/console")
-    assert html =~ "Bridge Console"
-    assert html =~ "CNS-101"
-    assert html =~ "Auto 15s"
+    assert html =~ "工作流控制台"
+    assert html =~ "PROJ-101"
+    assert html =~ "自动 15s"
 
     html =
       view
       |> form("#issue-query-form", %{
-        "issue" => "CNS-101",
+        "issue" => "PROJ-101",
         "branch" => "",
         "events" => "10",
         "include_logs" => "agent",
@@ -717,14 +717,32 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert html =~ "Adapter-backed status loaded successfully"
     assert html =~ "validation_passed"
-    assert html =~ "Append instruction"
+    assert html =~ "追加指令"
 
     pause_html =
       view
       |> element("#pause-run")
       |> render_click()
 
-    assert pause_html =~ "Pause recorded"
+    assert pause_html =~ "已记录暂停请求"
+  end
+
+  test "bridge console supports english locale toggle" do
+    Application.put_env(:symphony_elixir, :console_client_module, FakeConsoleClient)
+    start_test_endpoint([])
+
+    {:ok, view, html} = live(build_conn(), "/console?lang=en")
+    assert html =~ "Bridge Console"
+    assert html =~ "Auto 15s"
+    assert html =~ "Load issue"
+
+    zh_html =
+      view
+      |> element("#lang-zh")
+      |> render_click()
+
+    assert zh_html =~ "工作流控制台"
+    assert zh_html =~ "加载议题"
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do

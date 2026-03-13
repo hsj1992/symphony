@@ -175,7 +175,7 @@ export SYMPHONY_CONSOLE_ADAPTER_BASE_URL="http://127.0.0.1:4211/api/v1/symphony"
 export SYMPHONY_CONSOLE_ADAPTER_TOKEN="replace-with-your-bridge-token"
 ```
 
-For the `CNSdigital` split deployment used in this workspace, the recommended topology is:
+For a split deployment that keeps workflow tooling outside the product application, the recommended topology is:
 
 - `Symphony console` on `http://127.0.0.1:4100`
 - `symphony-bridge` on `http://127.0.0.1:4211`

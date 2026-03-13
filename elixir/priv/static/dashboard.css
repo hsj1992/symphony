@@ -113,6 +113,7 @@ pre {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 code,
@@ -189,6 +190,7 @@ pre,
   justify-items: end;
   align-content: start;
   min-width: min(100%, 9rem);
+  gap: 0.55rem;
 }
 
 .status-badge {
@@ -405,6 +407,10 @@ pre,
   border: 1px solid var(--line);
   color: #353740;
   font-size: 0.9rem;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
 }
 
 .empty-state {
@@ -456,6 +462,13 @@ pre,
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+
+.locale-switch {
+  display: inline-flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .console-grid {
@@ -522,12 +535,14 @@ pre,
   display: grid;
   gap: 1.15rem;
   margin-top: 1.1rem;
+  min-width: 0;
 }
 
 .detail-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.9rem;
+  min-width: 0;
 }
 
 .action-row {
@@ -542,6 +557,12 @@ pre,
   background: none;
   padding: 0;
   cursor: pointer;
+}
+
+.section-stack > section,
+.detail-grid > article,
+.console-grid > .section-card {
+  min-width: 0;
 }
 
 @media (max-width: 860px) {
