@@ -189,6 +189,11 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   end
 
   @impl true
+  def handle_event("clear_instruction", _params, socket) do
+    {:noreply, perform_action(socket, %{"action" => "clear_instruction"})}
+  end
+
+  @impl true
   def handle_event("hold", _params, socket) do
     {:noreply, perform_action(socket, %{"action" => "hold"})}
   end
@@ -471,8 +476,8 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
               <article class="metric-card">
                 <p class="metric-label"><%= tr(@lang, "Operator instruction", "操作指令") %></p>
-                <p class="metric-value"><%= pending_instruction_label(field(@status, "pending_operator_instruction"), @lang) %></p>
-                <p class="metric-detail"><%= pending_instruction_detail(field(@status, "pending_operator_instruction"), @lang) %></p>
+                <p class="metric-value"><%= operator_instruction_label(@status, @lang) %></p>
+                <p class="metric-detail"><%= operator_instruction_detail(@status, @lang) %></p>
               </article>
             </div>
 
@@ -520,6 +525,24 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               </section>
 
               <section>
+                <h3 class="section-subtitle"><%= tr(@lang, "Instruction history", "指令历史") %></h3>
+                <%= if instruction_history(field(@status, "operator_instruction_history")) == [] do %>
+                  <p class="empty-state"><%= tr(@lang, "No completed instruction transitions yet.", "当前还没有已完成的指令状态迁移。") %></p>
+                <% else %>
+                  <div class="timeline-list">
+                    <article :for={instruction <- instruction_history(field(@status, "operator_instruction_history"))} class="timeline-item">
+                      <div class="timeline-head">
+                        <span class={state_badge_class(field(instruction, "delivery_state"))}><%= instruction_state_text(instruction, @lang) %></span>
+                        <span class="timeline-time mono"><%= instruction_state_timestamp(instruction) || tr(@lang, "n/a", "未提供") %></span>
+                      </div>
+                      <p class="timeline-summary"><%= field(instruction, "message") || tr(@lang, "n/a", "未提供") %></p>
+                      <p class="timeline-meta"><%= instruction_history_meta(instruction, @lang) %></p>
+                    </article>
+                  </div>
+                <% end %>
+              </section>
+
+              <section>
                 <h3 class="section-subtitle"><%= tr(@lang, "Actions", "控制动作") %></h3>
                 <p class="section-copy action-copy"><%= action_guidance(@status, @lang) %></p>
                 <div class="action-row">
@@ -529,6 +552,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                   <button id="hold-run" type="button" class="subtle-button" phx-click="hold" disabled={action_disabled?(@status, "hold")}><%= tr(@lang, "Hold issue", "挂起议题") %></button>
                   <button id="release-run" type="button" class="subtle-button" phx-click="release" disabled={action_disabled?(@status, "release")}><%= tr(@lang, "Release hold", "解除挂起") %></button>
                   <button id="restart-run" type="button" class="subtle-button" phx-click="restart" disabled={action_disabled?(@status, "restart")}><%= tr(@lang, "Restart run", "重启运行") %></button>
+                  <button id="clear-instruction" type="button" class="subtle-button" phx-click="clear_instruction" disabled={action_disabled?(@status, "clear_instruction")}><%= tr(@lang, "Clear instruction", "清除指令") %></button>
                 </div>
 
                 <form id="instruction-form" class="instruction-form" phx-submit="instruction_action">
@@ -958,6 +982,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp action_success_message(lang, "hold"), do: tr(lang, "Issue hold applied", "已挂起议题")
   defp action_success_message(lang, "release"), do: tr(lang, "Issue hold released", "已解除挂起")
   defp action_success_message(lang, "restart"), do: tr(lang, "Restart scheduled", "已安排重启")
+  defp action_success_message(lang, "clear_instruction"), do: tr(lang, "Pending instruction cleared", "已清除待生效指令")
   defp action_success_message(lang, "instruction"), do: tr(lang, "Instruction queued for the next restart", "已将指令排队，等待下次重启应用")
   defp action_success_message(lang, "steer"), do: tr(lang, "Instruction queued and restart requested", "已排队指令，并请求重启应用")
   defp action_success_message(lang, _action), do: tr(lang, "Action recorded", "已记录动作")
@@ -1202,34 +1227,62 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp runtime_issue_detail(_runtime_issue, lang),
     do: tr(lang, "Load a running issue to inspect live session metadata.", "加载一个运行中的议题后，可在这里看到实时会话元数据。")
 
-  defp pending_instruction_label(nil, lang), do: tr(lang, "None queued", "当前没有待生效指令")
+  defp operator_instruction(status) when is_map(status) do
+    field(status, "latest_operator_instruction") || field(status, "pending_operator_instruction")
+  end
 
-  defp pending_instruction_label(pending_instruction, lang) when is_map(pending_instruction) do
-    case field(pending_instruction, "delivery_state") do
-      "restart_requested" -> tr(lang, "Restart requested", "已请求重启应用")
-      _ -> tr(lang, "Queued", "待下次重启应用")
+  defp operator_instruction(_status), do: nil
+
+  defp operator_instruction_label(status, lang) do
+    case operator_instruction(status) do
+      nil -> tr(lang, "None tracked", "当前没有跟踪中的指令")
+      instruction -> instruction_state_text(instruction, lang)
     end
   end
 
-  defp pending_instruction_label(_pending_instruction, lang), do: tr(lang, "None queued", "当前没有待生效指令")
+  defp operator_instruction_detail(status, lang) do
+    case operator_instruction(status) do
+      nil ->
+        tr(lang, "Append or steer a run to start tracking an operator instruction lifecycle.", "通过追加指令或引导运行，开始跟踪一条操作指令的生命周期。")
 
-  defp pending_instruction_detail(nil, lang),
-    do: tr(lang, "Append or steer a run to queue the next operator instruction.", "通过追加指令或引导运行，把新的操作指令排队到下一次重启。")
+      instruction ->
+        instruction_detail_text(instruction, lang)
+    end
+  end
 
-  defp pending_instruction_detail(pending_instruction, lang) when is_map(pending_instruction) do
-    message = blank_to_nil(field(pending_instruction, "message"))
-    profile = blank_to_nil(field(pending_instruction, "profile"))
-    queued_at = blank_to_nil(field(pending_instruction, "queued_at"))
-    queued_via_action = pending_action_label(field(pending_instruction, "queued_via_action"), lang)
-    restart_requested_at = blank_to_nil(field(pending_instruction, "restart_requested_at"))
-    restart_requested_via_action = pending_action_label(field(pending_instruction, "restart_requested_via_action"), lang)
+  defp instruction_state_text(instruction, lang) when is_map(instruction) do
+    case field(instruction, "delivery_state") do
+      "queued" -> tr(lang, "Queued", "待下次重启应用")
+      "restart_requested" -> tr(lang, "Restart requested", "已请求重启应用")
+      "applied" -> tr(lang, "Applied", "已应用")
+      "superseded" -> tr(lang, "Superseded", "已被替换")
+      "cleared" -> tr(lang, "Cleared", "已清除")
+      _ -> tr(lang, "Tracked", "已跟踪")
+    end
+  end
+
+  defp instruction_state_text(_instruction, lang), do: tr(lang, "Tracked", "已跟踪")
+
+  defp instruction_detail_text(instruction, lang) when is_map(instruction) do
+    message = blank_to_nil(field(instruction, "message"))
+    profile = blank_to_nil(field(instruction, "profile"))
+    queued_at = blank_to_nil(field(instruction, "queued_at"))
+    queued_via_action = pending_action_label(field(instruction, "queued_via_action"), lang)
+    restart_requested_at = blank_to_nil(field(instruction, "restart_requested_at"))
+    restart_requested_via_action = pending_action_label(field(instruction, "restart_requested_via_action"), lang)
+    applied_at = blank_to_nil(field(instruction, "applied_at"))
+    applied_via_scope = blank_to_nil(field(instruction, "applied_via_scope"))
+    superseded_at = blank_to_nil(field(instruction, "superseded_at"))
+    superseded_by_action = pending_action_label(field(instruction, "superseded_by_action"), lang)
+    cleared_at = blank_to_nil(field(instruction, "cleared_at"))
+    cleared_by_action = pending_action_label(field(instruction, "cleared_by_action"), lang)
 
     cond do
-      message && restart_requested_at && profile && restart_requested_via_action && queued_via_action ->
+      message && applied_at && queued_via_action && applied_via_scope ->
         tr(
           lang,
-          "Profile #{profile} queued via #{queued_via_action} at #{queued_at || "unknown"} and marked for restart via #{restart_requested_via_action} at #{restart_requested_at}: #{message}",
-          "模板 #{profile} 已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队，并于 #{restart_requested_at} 通过 #{restart_requested_via_action} 标记为重启应用：#{message}"
+          "Queued via #{queued_via_action} at #{queued_at || "unknown"} and applied at #{applied_at} when runtime entered #{applied_via_scope}: #{message}",
+          "已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队，并于 #{applied_at} 在 runtime 进入 #{applied_via_scope} 时应用：#{message}"
         )
 
       message && restart_requested_at && restart_requested_via_action && queued_via_action ->
@@ -1237,6 +1290,20 @@ defmodule SymphonyElixirWeb.ConsoleLive do
           lang,
           "Queued via #{queued_via_action} at #{queued_at || "unknown"} and marked for restart via #{restart_requested_via_action} at #{restart_requested_at}: #{message}",
           "已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队，并于 #{restart_requested_at} 通过 #{restart_requested_via_action} 标记为重启应用：#{message}"
+        )
+
+      message && superseded_at && superseded_by_action && queued_via_action ->
+        tr(
+          lang,
+          "Queued via #{queued_via_action} at #{queued_at || "unknown"} and superseded via #{superseded_by_action} at #{superseded_at}: #{message}",
+          "已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队，并于 #{superseded_at} 通过 #{superseded_by_action} 被替换：#{message}"
+        )
+
+      message && cleared_at && cleared_by_action && queued_via_action ->
+        tr(
+          lang,
+          "Queued via #{queued_via_action} at #{queued_at || "unknown"} and cleared via #{cleared_by_action} at #{cleared_at}: #{message}",
+          "已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队，并于 #{cleared_at} 通过 #{cleared_by_action} 清除：#{message}"
         )
 
       message && profile && queued_via_action ->
@@ -1254,14 +1321,36 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         )
 
       true ->
-        tr(lang, "Append or steer a run to queue the next operator instruction.", "通过追加指令或引导运行，把新的操作指令排队到下一次重启。")
+        tr(lang, "Append or steer a run to start tracking an operator instruction lifecycle.", "通过追加指令或引导运行，开始跟踪一条操作指令的生命周期。")
     end
   end
 
-  defp pending_instruction_detail(_pending_instruction, lang),
-    do: tr(lang, "Append or steer a run to queue the next operator instruction.", "通过追加指令或引导运行，把新的操作指令排队到下一次重启。")
+  defp instruction_detail_text(_instruction, lang),
+    do: tr(lang, "Append or steer a run to start tracking an operator instruction lifecycle.", "通过追加指令或引导运行，开始跟踪一条操作指令的生命周期。")
+
+  defp instruction_history(entries) when is_list(entries), do: entries
+  defp instruction_history(_entries), do: []
+
+  defp instruction_state_timestamp(instruction) when is_map(instruction) do
+    blank_to_nil(field(instruction, "applied_at")) ||
+      blank_to_nil(field(instruction, "restart_requested_at")) ||
+      blank_to_nil(field(instruction, "superseded_at")) ||
+      blank_to_nil(field(instruction, "cleared_at")) ||
+      blank_to_nil(field(instruction, "queued_at"))
+  end
+
+  defp instruction_state_timestamp(_instruction), do: nil
+
+  defp instruction_history_meta(instruction, lang) when is_map(instruction) do
+    detail = instruction_detail_text(instruction, lang)
+    if is_binary(detail), do: detail, else: tr(lang, "No instruction metadata returned.", "当前没有返回指令元数据。")
+  end
+
+  defp instruction_history_meta(_instruction, lang),
+    do: tr(lang, "No instruction metadata returned.", "当前没有返回指令元数据。")
 
   defp pending_action_label("instruction", lang), do: tr(lang, "append", "追加指令")
+  defp pending_action_label("clear_instruction", lang), do: tr(lang, "clear", "清除指令")
   defp pending_action_label("restart", lang), do: tr(lang, "restart", "重启运行")
   defp pending_action_label("steer", lang), do: tr(lang, "steer", "引导运行")
   defp pending_action_label(_action, _lang), do: nil
@@ -1288,6 +1377,10 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     field(field(status, "issue_control"), "held") not in [true, "true"]
   end
 
+  defp action_disabled?(status, "clear_instruction") do
+    is_nil(field(status, "pending_operator_instruction"))
+  end
+
   defp action_disabled?(status, action) when action in ["restart", "instruction", "steer"] do
     is_nil(field(status, "issue"))
   end
@@ -1304,8 +1397,19 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     pending_instruction = field(status, "pending_operator_instruction")
     pending_message = blank_to_nil(field(pending_instruction, "message"))
     pending_state = blank_to_nil(field(pending_instruction, "delivery_state"))
+    latest_instruction = operator_instruction(status)
+    latest_state = blank_to_nil(field(latest_instruction, "delivery_state"))
 
     cond do
+      latest_state == "applied" ->
+        tr(lang, "The latest operator instruction has already been applied. Queue a new one only if direction changed again.", "最近一条操作指令已经应用。只有在方向再次变化时才需要再排队新的指令。")
+
+      latest_state == "superseded" ->
+        tr(lang, "The latest visible instruction record was superseded. Check the newer queued instruction before acting.", "当前显示的最近一条指令记录已经被替换。继续操作前先看更新后的待生效指令。")
+
+      latest_state == "cleared" ->
+        tr(lang, "The pending operator instruction was cleared. Append or steer again only if a new direction is needed.", "待生效指令已经清除。只有在需要新的方向时才再次追加或引导。")
+
       pending_message && pending_state == "restart_requested" ->
         tr(lang, "A queued operator instruction is already marked for the next restart path. Monitor the next run instead of re-sending it.", "当前已有一条待生效指令标记为通过下次重启应用。优先观察下一轮运行，而不是重复发送。")
 

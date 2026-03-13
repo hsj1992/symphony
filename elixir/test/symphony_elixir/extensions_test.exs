@@ -177,6 +177,8 @@ defmodule SymphonyElixir.ExtensionsTest do
            "reason" => nil
          },
          "pending_operator_instruction" => pending_instruction,
+         "latest_operator_instruction" => latest_instruction_state(),
+         "operator_instruction_history" => instruction_history_state(),
          "checks" => %{
            "local_validation" => %{
              "status" => "passed",
@@ -256,6 +258,8 @@ defmodule SymphonyElixir.ExtensionsTest do
              "reason" => nil
            },
            "pending_operator_instruction" => pending_instruction_state(),
+           "latest_operator_instruction" => latest_instruction_state(),
+           "operator_instruction_history" => instruction_history_state(),
            "checks" => %{},
            "latest_events" => []
          }
@@ -266,48 +270,103 @@ defmodule SymphonyElixir.ExtensionsTest do
       Process.get({__MODULE__, :pending_instruction})
     end
 
+    defp latest_instruction_state do
+      Process.get({__MODULE__, :latest_instruction})
+    end
+
+    defp instruction_history_state do
+      Process.get({__MODULE__, :instruction_history}, [])
+    end
+
+    defp push_history(entry) do
+      Process.put({__MODULE__, :instruction_history}, [entry | instruction_history_state()])
+    end
+
     defp update_pending_instruction_state(action, payload) do
       message = payload["message"] || payload[:message]
       profile = payload["profile"] || payload[:profile]
 
       case action do
         "instruction" when is_binary(message) and message != "" ->
-          Process.put(
-            {__MODULE__, :pending_instruction},
-            %{
-              "message" => message,
-              "profile" => profile,
-              "queued_at" => "2026-03-12T15:11:00+08:00",
-              "queued_via_action" => "instruction",
-              "delivery_state" => "queued"
-            }
-          )
+          if pending = pending_instruction_state() do
+            superseded =
+              Map.merge(pending, %{
+                "delivery_state" => "superseded",
+                "superseded_at" => "2026-03-12T15:10:30+08:00",
+                "superseded_by_action" => "instruction"
+              })
+
+            Process.put({__MODULE__, :latest_instruction}, superseded)
+            push_history(superseded)
+          end
+
+          pending = %{
+            "message" => message,
+            "profile" => profile,
+            "queued_at" => "2026-03-12T15:11:00+08:00",
+            "queued_via_action" => "instruction",
+            "delivery_state" => "queued"
+          }
+
+          Process.put({__MODULE__, :pending_instruction}, pending)
+          Process.put({__MODULE__, :latest_instruction}, pending)
 
         "steer" when is_binary(message) and message != "" ->
-          Process.put(
-            {__MODULE__, :pending_instruction},
-            %{
-              "message" => message,
-              "profile" => profile,
-              "queued_at" => "2026-03-12T15:11:00+08:00",
-              "queued_via_action" => "steer",
-              "delivery_state" => "restart_requested",
-              "restart_requested_at" => "2026-03-12T15:12:00+08:00",
-              "restart_requested_via_action" => "steer"
-            }
-          )
+          if pending = pending_instruction_state() do
+            superseded =
+              Map.merge(pending, %{
+                "delivery_state" => "superseded",
+                "superseded_at" => "2026-03-12T15:10:30+08:00",
+                "superseded_by_action" => "steer"
+              })
+
+            Process.put({__MODULE__, :latest_instruction}, superseded)
+            push_history(superseded)
+          end
+
+          pending = %{
+            "message" => message,
+            "profile" => profile,
+            "queued_at" => "2026-03-12T15:11:00+08:00",
+            "queued_via_action" => "steer",
+            "delivery_state" => "restart_requested",
+            "restart_requested_at" => "2026-03-12T15:12:00+08:00",
+            "restart_requested_via_action" => "steer"
+          }
+
+          Process.put({__MODULE__, :pending_instruction}, pending)
+          Process.put({__MODULE__, :latest_instruction}, pending)
 
         "restart" ->
           case pending_instruction_state() do
             %{} = pending ->
-              Process.put(
-                {__MODULE__, :pending_instruction},
+              updated =
                 Map.merge(pending, %{
                   "delivery_state" => "restart_requested",
                   "restart_requested_at" => "2026-03-12T15:12:00+08:00",
                   "restart_requested_via_action" => "restart"
                 })
-              )
+
+              Process.put({__MODULE__, :pending_instruction}, updated)
+              Process.put({__MODULE__, :latest_instruction}, updated)
+
+            _ ->
+              :ok
+          end
+
+        "clear_instruction" ->
+          case pending_instruction_state() do
+            %{} = pending ->
+              cleared =
+                Map.merge(pending, %{
+                  "delivery_state" => "cleared",
+                  "cleared_at" => "2026-03-12T15:12:30+08:00",
+                  "cleared_by_action" => "clear_instruction"
+                })
+
+              Process.put({__MODULE__, :pending_instruction}, nil)
+              Process.put({__MODULE__, :latest_instruction}, cleared)
+              push_history(cleared)
 
             _ ->
               :ok
@@ -547,6 +606,8 @@ defmodule SymphonyElixir.ExtensionsTest do
          "checks" => %{},
          "latest_events" => [],
          "pending_operator_instruction" => pending_instruction,
+         "latest_operator_instruction" => Process.get({__MODULE__, :latest_instruction}),
+         "operator_instruction_history" => Process.get({__MODULE__, :instruction_history}, []),
          "doctor" => %{"overall_ok" => true},
          "workpad" => %{
            "current_status" => "- Phase: validation\n- Summary: Profile current status"
@@ -564,42 +625,85 @@ defmodule SymphonyElixir.ExtensionsTest do
 
       case action do
         "instruction" when is_binary(message) and message != "" ->
-          Process.put(
-            {__MODULE__, :pending_instruction},
-            %{
-              "message" => message,
-              "profile" => profile,
-              "queued_at" => "2026-03-13T18:11:00+08:00",
-              "queued_via_action" => "instruction",
-              "delivery_state" => "queued"
-            }
-          )
+          if pending = Process.get({__MODULE__, :pending_instruction}) do
+            superseded =
+              Map.merge(pending, %{
+                "delivery_state" => "superseded",
+                "superseded_at" => "2026-03-13T18:10:30+08:00",
+                "superseded_by_action" => "instruction"
+              })
+
+            Process.put({__MODULE__, :latest_instruction}, superseded)
+            Process.put({__MODULE__, :instruction_history}, [superseded | Process.get({__MODULE__, :instruction_history}, [])])
+          end
+
+          pending = %{
+            "message" => message,
+            "profile" => profile,
+            "queued_at" => "2026-03-13T18:11:00+08:00",
+            "queued_via_action" => "instruction",
+            "delivery_state" => "queued"
+          }
+
+          Process.put({__MODULE__, :pending_instruction}, pending)
+          Process.put({__MODULE__, :latest_instruction}, pending)
 
         "steer" when is_binary(message) and message != "" ->
-          Process.put(
-            {__MODULE__, :pending_instruction},
-            %{
-              "message" => message,
-              "profile" => profile,
-              "queued_at" => "2026-03-13T18:11:00+08:00",
-              "queued_via_action" => "steer",
-              "delivery_state" => "restart_requested",
-              "restart_requested_at" => "2026-03-13T18:12:00+08:00",
-              "restart_requested_via_action" => "steer"
-            }
-          )
+          if pending = Process.get({__MODULE__, :pending_instruction}) do
+            superseded =
+              Map.merge(pending, %{
+                "delivery_state" => "superseded",
+                "superseded_at" => "2026-03-13T18:10:30+08:00",
+                "superseded_by_action" => "steer"
+              })
+
+            Process.put({__MODULE__, :latest_instruction}, superseded)
+            Process.put({__MODULE__, :instruction_history}, [superseded | Process.get({__MODULE__, :instruction_history}, [])])
+          end
+
+          pending = %{
+            "message" => message,
+            "profile" => profile,
+            "queued_at" => "2026-03-13T18:11:00+08:00",
+            "queued_via_action" => "steer",
+            "delivery_state" => "restart_requested",
+            "restart_requested_at" => "2026-03-13T18:12:00+08:00",
+            "restart_requested_via_action" => "steer"
+          }
+
+          Process.put({__MODULE__, :pending_instruction}, pending)
+          Process.put({__MODULE__, :latest_instruction}, pending)
 
         "restart" ->
           case Process.get({__MODULE__, :pending_instruction}) do
             %{} = pending ->
-              Process.put(
-                {__MODULE__, :pending_instruction},
+              updated =
                 Map.merge(pending, %{
                   "delivery_state" => "restart_requested",
                   "restart_requested_at" => "2026-03-13T18:12:00+08:00",
                   "restart_requested_via_action" => "restart"
                 })
-              )
+
+              Process.put({__MODULE__, :pending_instruction}, updated)
+              Process.put({__MODULE__, :latest_instruction}, updated)
+
+            _ ->
+              :ok
+          end
+
+        "clear_instruction" ->
+          case Process.get({__MODULE__, :pending_instruction}) do
+            %{} = pending ->
+              cleared =
+                Map.merge(pending, %{
+                  "delivery_state" => "cleared",
+                  "cleared_at" => "2026-03-13T18:12:30+08:00",
+                  "cleared_by_action" => "clear_instruction"
+                })
+
+              Process.put({__MODULE__, :pending_instruction}, nil)
+              Process.put({__MODULE__, :latest_instruction}, cleared)
+              Process.put({__MODULE__, :instruction_history}, [cleared | Process.get({__MODULE__, :instruction_history}, [])])
 
             _ ->
               :ok
@@ -631,6 +735,8 @@ defmodule SymphonyElixir.ExtensionsTest do
              "pause_reason" => nil
            },
            "pending_operator_instruction" => Process.get({__MODULE__, :pending_instruction}),
+           "latest_operator_instruction" => Process.get({__MODULE__, :latest_instruction}),
+           "operator_instruction_history" => Process.get({__MODULE__, :instruction_history}, []),
            "checks" => %{},
            "latest_events" => []
          }
@@ -1261,7 +1367,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "worker.frontend"
     assert html =~ "追加指令"
     assert html =~ "当前状态"
-    assert html =~ "当前没有待生效指令"
+    assert html =~ "当前没有跟踪中的指令"
 
     pause_html =
       view
@@ -1304,6 +1410,15 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert queued_html =~ "待下次重启应用"
     assert queued_html =~ "Queue this for the next restart"
     assert queued_html =~ "追加指令"
+
+    cleared_html =
+      view
+      |> element("#clear-instruction")
+      |> render_click()
+
+    assert cleared_html =~ "已清除待生效指令"
+    assert cleared_html =~ "已清除"
+    assert cleared_html =~ "清除指令"
 
     logs_html =
       view
