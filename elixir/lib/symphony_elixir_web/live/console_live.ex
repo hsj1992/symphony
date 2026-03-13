@@ -11,10 +11,14 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   @impl true
   def mount(_params, _session, socket) do
     lang = @default_lang
+    adapters = adapter_options()
+    selected_adapter = default_adapter_id(adapters)
 
     socket =
       socket
       |> assign(:lang, lang)
+      |> assign(:adapters, adapters)
+      |> assign(:selected_adapter, selected_adapter)
       |> assign(:meta, nil)
       |> assign(:runs, [])
       |> assign(:status, nil)
@@ -46,12 +50,17 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   @impl true
   def handle_params(params, _uri, socket) do
     lang = normalize_lang(params["lang"])
+    adapters = adapter_options()
+    selected_adapter = selected_adapter_id(adapters, params["adapter"])
 
     {:noreply,
      socket
      |> assign(:lang, lang)
+     |> assign(:adapters, adapters)
+     |> assign(:selected_adapter, selected_adapter)
      |> assign(:log_options, log_options(lang))
-     |> assign(:refresh_options, refresh_options(lang))}
+     |> assign(:refresh_options, refresh_options(lang))
+     |> refresh_console(load_status?: not is_nil(socket.assigns.selected_issue))}
   end
 
   @impl true
@@ -67,7 +76,20 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   @impl true
   def handle_event("set_lang", %{"lang" => lang}, socket) do
-    {:noreply, push_patch(socket, to: console_path(normalize_lang(lang)))}
+    {:noreply, push_patch(socket, to: console_path(normalize_lang(lang), socket.assigns.selected_adapter))}
+  end
+
+  @impl true
+  def handle_event("set_adapter", %{"adapter" => adapter_id}, socket) do
+    {:noreply,
+     socket
+     |> assign(:selected_adapter, selected_adapter_id(socket.assigns.adapters, adapter_id))
+     |> assign(:selected_issue, nil)
+     |> assign(:issue_query, "")
+     |> assign(:branch_override, "")
+     |> assign(:status, nil)
+     |> assign(:active_log_stream, nil)
+     |> push_patch(to: console_path(socket.assigns.lang, adapter_id))}
   end
 
   @impl true
@@ -179,6 +201,17 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               <%= refresh_badge_label(@lang, @refresh_interval_ms) %>
             </span>
             <div class="locale-switch">
+              <select
+                :if={length(@adapters) > 1}
+                id="adapter-select"
+                class="form-input form-input-compact"
+                phx-change="set_adapter"
+                name="adapter"
+              >
+                <option :for={adapter <- @adapters} value={adapter.id} selected={adapter.id == @selected_adapter}>
+                  <%= adapter.label %>
+                </option>
+              </select>
               <button id="lang-zh" type="button" class={locale_button_class(@lang, "zh")} phx-click="set_lang" phx-value-lang="zh">中文</button>
               <button id="lang-en" type="button" class={locale_button_class(@lang, "en")} phx-click="set_lang" phx-value-lang="en">EN</button>
             </div>
@@ -502,7 +535,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp refresh_console(socket, opts) do
     socket =
-      case client_module().meta() do
+      case client_meta(socket.assigns.selected_adapter) do
         {:ok, meta} ->
           events_limit = socket.assigns.events_limit || field(meta, "default_event_limit") || 10
           assign(socket, :meta, meta) |> assign(:events_limit, events_limit) |> assign(:error_message, nil)
@@ -512,7 +545,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       end
 
     socket =
-      case client_module().list_runs(12) do
+      case client_list_runs(12, socket.assigns.selected_adapter) do
         {:ok, runs} -> assign(socket, :runs, runs)
         {:error, reason} -> assign(socket, :error_message, error_message(socket.assigns.lang, reason))
       end
@@ -533,7 +566,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       workpad: socket.assigns.include_workpad
     }
 
-    case client_module().get_status(socket.assigns.selected_issue, opts) do
+    case client_get_status(socket.assigns.selected_issue, opts, socket.assigns.selected_adapter) do
       {:ok, status} ->
         socket
         |> assign(:status, status)
@@ -563,7 +596,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> Map.new()
 
-    case client_module().create_action(payload) do
+    case client_create_action(payload, socket.assigns.selected_adapter) do
       {:ok, response} ->
         socket
         |> assign(:status, field(response, "status") || socket.assigns.status)
@@ -577,6 +610,71 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp client_module do
     Application.get_env(:symphony_elixir, :console_client_module, SymphonyElixir.ConsoleClient)
+  end
+
+  defp adapter_options do
+    module = client_module()
+
+    if function_exported?(module, :list_adapters, 0) do
+      module.list_adapters()
+    else
+      []
+    end
+  end
+
+  defp default_adapter_id([first | _rest]), do: first.id
+  defp default_adapter_id([]), do: nil
+
+  defp selected_adapter_id([], _requested), do: nil
+  defp selected_adapter_id(adapters, requested) when requested in [nil, ""], do: default_adapter_id(adapters)
+
+  defp selected_adapter_id(adapters, requested) do
+    if Enum.any?(adapters, &(&1.id == requested)) do
+      requested
+    else
+      default_adapter_id(adapters)
+    end
+  end
+
+  defp client_meta(adapter_id) do
+    module = client_module()
+
+    cond do
+      function_exported?(module, :meta, 1) -> module.meta(adapter_id)
+      function_exported?(module, :meta, 0) -> module.meta()
+      true -> {:error, :not_configured}
+    end
+  end
+
+  defp client_list_runs(limit, adapter_id) do
+    module = client_module()
+
+    cond do
+      function_exported?(module, :list_runs, 2) -> module.list_runs(limit, adapter_id)
+      function_exported?(module, :list_runs, 1) -> module.list_runs(limit)
+      function_exported?(module, :list_runs, 0) -> module.list_runs()
+      true -> {:error, :not_configured}
+    end
+  end
+
+  defp client_get_status(issue_identifier, opts, adapter_id) do
+    module = client_module()
+
+    cond do
+      function_exported?(module, :get_status, 3) -> module.get_status(issue_identifier, opts, adapter_id)
+      function_exported?(module, :get_status, 2) -> module.get_status(issue_identifier, opts)
+      true -> {:error, :not_configured}
+    end
+  end
+
+  defp client_create_action(payload, adapter_id) do
+    module = client_module()
+
+    cond do
+      function_exported?(module, :create_action, 2) -> module.create_action(payload, adapter_id)
+      function_exported?(module, :create_action, 1) -> module.create_action(payload)
+      true -> {:error, :not_configured}
+    end
   end
 
   defp adapter_label(nil), do: "Project"
@@ -761,8 +859,23 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp normalize_lang("zh"), do: "zh"
   defp normalize_lang(_lang), do: @default_lang
 
-  defp console_path("en"), do: "/console?lang=en"
-  defp console_path(_lang), do: "/console?lang=zh"
+  defp console_path(lang, adapter_id) do
+    query =
+      %{}
+      |> maybe_put_query("lang", lang)
+      |> maybe_put_query("adapter", adapter_id)
+      |> URI.encode_query()
+
+    if query == "" do
+      "/console"
+    else
+      "/console?" <> query
+    end
+  end
+
+  defp maybe_put_query(query, _key, nil), do: query
+  defp maybe_put_query(query, _key, ""), do: query
+  defp maybe_put_query(query, key, value), do: Map.put(query, key, value)
 
   defp refresh_options("en"), do: [{"Off", "off"}, {"15s", "15000"}, {"30s", "30000"}, {"60s", "60000"}]
   defp refresh_options(_lang), do: [{"关闭", "off"}, {"15s", "15000"}, {"30s", "30000"}, {"60s", "60000"}]

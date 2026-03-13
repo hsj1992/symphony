@@ -175,6 +175,30 @@ export SYMPHONY_CONSOLE_ADAPTER_BASE_URL="http://127.0.0.1:4211/api/v1/symphony"
 export SYMPHONY_CONSOLE_ADAPTER_TOKEN="replace-with-your-bridge-token"
 ```
 
+If you want one console to switch between multiple project adapters, provide a JSON array instead:
+
+```bash
+export ALPHA_BRIDGE_TOKEN="replace-alpha-token"
+export BETA_BRIDGE_TOKEN="replace-beta-token"
+export SYMPHONY_CONSOLE_ADAPTERS_JSON='[
+  {
+    "id": "alpha",
+    "label": "Alpha Project",
+    "base_url": "http://127.0.0.1:4211/api/v1/symphony",
+    "token_env": "ALPHA_BRIDGE_TOKEN"
+  },
+  {
+    "id": "beta",
+    "label": "Beta Project",
+    "base_url": "http://127.0.0.1:4311/api/v1/symphony",
+    "token_env": "BETA_BRIDGE_TOKEN"
+  }
+]'
+```
+
+When multiple adapters are configured, the console shows a project switcher and also accepts
+`/console?adapter=<id>`.
+
 For a split deployment that keeps workflow tooling outside the product application, the recommended topology is:
 
 - `Symphony console` on `http://127.0.0.1:4100`

@@ -196,6 +196,141 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
   end
 
+  defmodule MultiAdapterConsoleClient do
+    def list_adapters do
+      [
+        %{
+          id: "alpha",
+          label: "Alpha Project",
+          base_url: "http://alpha.example",
+          token: "alpha-token",
+          timeout_ms: 15_000
+        },
+        %{
+          id: "beta",
+          label: "Beta Project",
+          base_url: "http://beta.example",
+          token: "beta-token",
+          timeout_ms: 15_000
+        }
+      ]
+    end
+
+    def meta(adapter_id) do
+      {:ok,
+       %{
+         "repo_key" => adapter_id || "alpha",
+         "repo_name" => adapter_name(adapter_id),
+         "issue_prefix" => issue_prefix(adapter_id),
+         "supports" => %{
+           "recent_runs" => true,
+           "doctor" => true,
+           "workpad" => true,
+           "actions" => true
+         },
+         "default_event_limit" => 10,
+         "default_refresh_seconds" => 15
+       }}
+    end
+
+    def list_runs(_limit, adapter_id) do
+      {:ok,
+       [
+         %{
+           "issue" => default_issue(adapter_id),
+           "phase" => "validation",
+           "route_hint" => "Merging",
+           "updated_at" => "2026-03-13T09:00:00+08:00"
+         }
+       ]}
+    end
+
+    def get_status(issue_identifier, _opts, adapter_id) do
+      {:ok,
+       %{
+         "issue" => issue_identifier,
+         "phase" => "handoff",
+         "summary" => "#{adapter_name(adapter_id)} status loaded successfully",
+         "next" => "Wait for remote CI to finish",
+         "route_hint" => "Merging",
+         "branch" => "feat/#{adapter_id || "alpha"}-console",
+         "commit" => "abcdef1",
+         "updated_at" => "2026-03-13T09:10:00+08:00",
+         "runtime_control" => %{
+           "paused" => false,
+           "paused_at" => nil,
+           "pause_reason" => nil
+         },
+         "checks" => %{
+           "local_validation" => %{
+             "status" => "passed",
+             "summary" => "#{adapter_name(adapter_id)} validation passed"
+           }
+         },
+         "latest_events" => [
+           %{
+             "ts" => "2026-03-13T09:08:00+08:00",
+             "type" => "validation_passed",
+             "summary" => "#{adapter_name(adapter_id)} validation passed",
+             "actor" => "worker.#{adapter_id || "alpha"}"
+           }
+         ],
+         "doctor" => %{"overall_ok" => true},
+         "workpad" => %{
+           "current_status" => "- Phase: validation\n- Summary: #{adapter_name(adapter_id)} current status",
+           "execution_timeline" => "| Time | Actor | Event | Summary |\n| --- | --- | --- | --- |\n| 2026-03-13 | symphony | validation_passed | #{adapter_name(adapter_id)} validation passed |"
+         },
+         "logs" => %{
+           "agent" => "#{adapter_name(adapter_id)} agent log line",
+           "raw" => %{"command.log" => "#{adapter_name(adapter_id)} raw command output"}
+         }
+       }}
+    end
+
+    def create_action(payload, adapter_id) do
+      action = payload["action"] || payload[:action] || "pause"
+
+      {:ok,
+       %{
+         "action" => action,
+         "runtime" => %{
+           "paused" => action == "pause",
+           "changed" => true,
+           "requested_at" => "2026-03-13T09:11:00+08:00",
+           "operations" => ["pause_intake", "pause_retries"],
+           "pause_reason" => nil,
+           "paused_at" => "2026-03-13T09:11:00+08:00"
+         },
+         "status" => %{
+           "issue" => default_issue(adapter_id),
+           "phase" => "handoff",
+           "summary" => "#{adapter_name(adapter_id)} status loaded successfully",
+           "next" => "Wait for remote CI to finish",
+           "route_hint" => "Merging",
+           "branch" => "feat/#{adapter_id || "alpha"}-console",
+           "commit" => "abcdef1",
+           "updated_at" => "2026-03-13T09:10:00+08:00",
+           "runtime_control" => %{
+             "paused" => action == "pause",
+             "paused_at" => "2026-03-13T09:11:00+08:00",
+             "pause_reason" => nil
+           },
+           "checks" => %{},
+           "latest_events" => []
+         }
+       }}
+    end
+
+    defp adapter_name("beta"), do: "Beta Project"
+    defp adapter_name(_adapter_id), do: "Alpha Project"
+
+    defp issue_prefix("beta"), do: "BETA"
+    defp issue_prefix(_adapter_id), do: "ALPHA"
+
+    defp default_issue("beta"), do: "BETA-202"
+    defp default_issue(_adapter_id), do: "ALPHA-101"
+  end
+
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
     console_client_module = Application.get_env(:symphony_elixir, :console_client_module)
@@ -830,6 +965,46 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert zh_html =~ "工作流控制台"
     assert zh_html =~ "加载议题"
+  end
+
+  test "bridge console switches adapters from query params and ui controls" do
+    Application.put_env(:symphony_elixir, :console_client_module, MultiAdapterConsoleClient)
+    start_test_endpoint([])
+
+    {:ok, view, html} = live(build_conn(), "/console?adapter=beta&lang=en")
+    assert html =~ "Beta Project"
+    assert html =~ "BETA-202"
+    assert html =~ "Load issue"
+
+    detail_html =
+      view
+      |> form("#issue-query-form", %{
+        "issue" => "BETA-202",
+        "branch" => "",
+        "events" => "10",
+        "include_logs" => "agent",
+        "doctor" => "true",
+        "workpad" => "true"
+      })
+      |> render_submit()
+
+    assert detail_html =~ "Beta Project status loaded successfully"
+    assert detail_html =~ "feat/beta-console"
+
+    switched_html =
+      render_change(view, "set_adapter", %{"adapter" => "alpha"})
+
+    assert switched_html =~ "Alpha Project"
+    assert switched_html =~ "ALPHA-101"
+    refute switched_html =~ "BETA-202"
+
+    zh_html =
+      view
+      |> element("#lang-zh")
+      |> render_click()
+
+    assert zh_html =~ "工作流控制台"
+    assert zh_html =~ "Alpha Project"
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
