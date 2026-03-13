@@ -172,6 +172,90 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
              String.starts_with?(retry_entry.error, "retry poll failed:")
   end
 
+  test "issue-level restart control accepts idle candidate issues and queues immediate intake when no slots are available" do
+    previous_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+
+    on_exit(fn ->
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_issues || [])
+    end)
+
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_api_token: nil,
+      poll_interval_ms: 50,
+      max_concurrent_agents: 1
+    )
+
+    issue = %Issue{
+      id: "issue-restart-idle",
+      identifier: "MT-IDLE",
+      title: "Restart idle issue",
+      description: "Requeue an idle candidate issue",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-IDLE"
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :IssueRestartIdleOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    worker = spawn(fn -> Process.sleep(:infinity) end)
+    ref = Process.monitor(worker)
+
+    running_entry = %{
+      pid: worker,
+      ref: ref,
+      identifier: "MT-BUSY",
+      issue: %Issue{
+        id: "issue-busy",
+        identifier: "MT-BUSY",
+        title: "Busy issue",
+        description: "Occupy the only worker slot",
+        state: "In Progress",
+        url: "https://example.org/issues/MT-BUSY"
+      },
+      session_id: "thread-busy",
+      turn_count: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      worker_host: nil,
+      workspace_path: nil,
+      retry_attempt: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{"issue-busy" => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, "issue-busy"))
+    end)
+
+    assert %{
+             "issue_identifier" => "MT-IDLE",
+             "status" => "queued",
+             "scope" => "idle",
+             "operations" => ["poll", "reconcile"]
+           } =
+             Orchestrator.control_issue(orchestrator_name, "MT-IDLE", "restart", "manual restart")
+             |> stringify_keys()
+
+    state = :sys.get_state(pid)
+    assert is_reference(state.tick_timer_ref)
+
+    Process.exit(worker, :normal)
+    assert_receive {:DOWN, ^ref, :process, ^worker, _reason}, 1_000
+  end
+
   test "issue-level hold control terminates a running worker and prevents redispatch" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil, poll_interval_ms: 50)
 

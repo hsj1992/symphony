@@ -2160,6 +2160,65 @@ defmodule SymphonyElixir.Orchestrator do
            reason: reason
          }}
 
+      issue = find_candidate_issue_by_identifier(identifier) ->
+        cond do
+          Map.has_key?(state.held_issues, issue.id) ->
+            {:ok, state,
+             %{
+               issue_identifier: issue.identifier,
+               issue_id: issue.id,
+               action: "restart",
+               status: "held",
+               scope: "held",
+               changed: false,
+               operations: [],
+               reason: reason
+             }}
+
+          state.paused == true ->
+            {:ok, state,
+             %{
+               issue_identifier: issue.identifier,
+               issue_id: issue.id,
+               action: "restart",
+               status: "blocked",
+               scope: "idle",
+               changed: false,
+               operations: [],
+               reason: reason
+             }}
+
+          dispatch_slots_available?(issue, state) and worker_slots_available?(state) ->
+            next_state = dispatch_issue(state, issue)
+
+            {:ok, next_state,
+             %{
+               issue_identifier: issue.identifier,
+               issue_id: issue.id,
+               action: "restart",
+               status: "scheduled",
+               scope: "idle",
+               changed: true,
+               operations: ["dispatch_issue_now"],
+               reason: reason
+             }}
+
+          true ->
+            next_state = schedule_tick(state, 0)
+
+            {:ok, next_state,
+             %{
+               issue_identifier: issue.identifier,
+               issue_id: issue.id,
+               action: "restart",
+               status: "queued",
+               scope: "idle",
+               changed: true,
+               operations: ["poll", "reconcile"],
+               reason: reason
+             }}
+        end
+
       true ->
         {:error, :issue_not_found}
     end
