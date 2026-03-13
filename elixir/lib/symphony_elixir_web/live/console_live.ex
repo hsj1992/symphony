@@ -515,13 +515,14 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
               <section>
                 <h3 class="section-subtitle"><%= tr(@lang, "Actions", "控制动作") %></h3>
+                <p class="section-copy action-copy"><%= action_guidance(@status, @lang) %></p>
                 <div class="action-row">
-                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause"><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
-                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume"><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
-                  <button id="cancel-run" type="button" class="subtle-button" phx-click="cancel"><%= tr(@lang, "Cancel current run", "取消当前运行") %></button>
-                  <button id="hold-run" type="button" class="subtle-button" phx-click="hold"><%= tr(@lang, "Hold issue", "挂起议题") %></button>
-                  <button id="release-run" type="button" class="subtle-button" phx-click="release"><%= tr(@lang, "Release hold", "解除挂起") %></button>
-                  <button id="restart-run" type="button" class="subtle-button" phx-click="restart"><%= tr(@lang, "Restart run", "重启运行") %></button>
+                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause" disabled={action_disabled?(@status, "pause")}><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
+                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume" disabled={action_disabled?(@status, "resume")}><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
+                  <button id="cancel-run" type="button" class="subtle-button" phx-click="cancel" disabled={action_disabled?(@status, "cancel")}><%= tr(@lang, "Cancel current run", "取消当前运行") %></button>
+                  <button id="hold-run" type="button" class="subtle-button" phx-click="hold" disabled={action_disabled?(@status, "hold")}><%= tr(@lang, "Hold issue", "挂起议题") %></button>
+                  <button id="release-run" type="button" class="subtle-button" phx-click="release" disabled={action_disabled?(@status, "release")}><%= tr(@lang, "Release hold", "解除挂起") %></button>
+                  <button id="restart-run" type="button" class="subtle-button" phx-click="restart" disabled={action_disabled?(@status, "restart")}><%= tr(@lang, "Restart run", "重启运行") %></button>
                 </div>
 
                 <form id="instruction-form" class="instruction-form" phx-submit="instruction_action">
@@ -540,8 +541,8 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                   </label>
 
                   <div class="action-row">
-                    <button type="submit" name="intent" value="append" class="subtle-button subtle-button-primary"><%= tr(@lang, "Append instruction", "追加指令") %></button>
-                    <button id="steer-run" type="submit" name="intent" value="steer" class="subtle-button"><%= tr(@lang, "Steer run", "引导运行") %></button>
+                    <button type="submit" name="intent" value="append" class="subtle-button subtle-button-primary" disabled={action_disabled?(@status, "instruction")}><%= tr(@lang, "Append instruction", "追加指令") %></button>
+                    <button id="steer-run" type="submit" name="intent" value="steer" class="subtle-button" disabled={action_disabled?(@status, "steer")}><%= tr(@lang, "Steer run", "引导运行") %></button>
                   </div>
                 </form>
               </section>
@@ -1191,6 +1192,66 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp runtime_issue_detail(_runtime_issue, lang),
     do: tr(lang, "Load a running issue to inspect live session metadata.", "加载一个运行中的议题后，可在这里看到实时会话元数据。")
+
+  defp action_disabled?(nil, _action), do: true
+
+  defp action_disabled?(status, "pause") do
+    field(field(status, "runtime_control"), "paused") in [true, "true"]
+  end
+
+  defp action_disabled?(status, "resume") do
+    field(field(status, "runtime_control"), "paused") not in [true, "true"]
+  end
+
+  defp action_disabled?(status, "cancel") do
+    runtime_scope(status) not in ["running", "retrying"]
+  end
+
+  defp action_disabled?(status, "hold") do
+    field(field(status, "issue_control"), "held") in [true, "true"]
+  end
+
+  defp action_disabled?(status, "release") do
+    field(field(status, "issue_control"), "held") not in [true, "true"]
+  end
+
+  defp action_disabled?(status, action) when action in ["restart", "instruction", "steer"] do
+    is_nil(field(status, "issue"))
+  end
+
+  defp action_disabled?(_status, _action), do: false
+
+  defp action_guidance(nil, lang),
+    do: tr(lang, "Load an issue first. Runtime and issue controls stay disabled until a concrete issue is selected.", "先加载一个议题。未选中具体议题前，运行时和议题控制会保持禁用。")
+
+  defp action_guidance(status, lang) do
+    runtime_paused = field(field(status, "runtime_control"), "paused") in [true, "true"]
+    issue_held = field(field(status, "issue_control"), "held") in [true, "true"]
+    runtime_scope = runtime_scope(status)
+
+    cond do
+      runtime_paused ->
+        tr(lang, "Runtime intake is paused. You can resume intake, hold/release the issue, or restart it for later dispatch.", "runtime intake 当前已暂停。你可以恢复 intake，也可以挂起/解除该议题，或安排它稍后重启。")
+
+      issue_held ->
+        tr(lang, "This issue is manually held. Release the hold before expecting redispatch.", "该议题目前处于手动挂起状态。若希望重新派发，先解除挂起。")
+
+      runtime_scope == "running" ->
+        tr(lang, "A live run is active. Cancel stops the current run, restart relaunches it, and steer appends guidance before restart.", "当前已有活跃运行。取消会终止当前运行，重启会重新拉起，\"引导运行\" 会先追加指令再重启。")
+
+      runtime_scope == "retrying" ->
+        tr(lang, "This issue is queued for retry. Cancel removes the queued retry; restart or steer will bring it back in immediately.", "该议题当前处于重试排队中。取消会移除当前重试，重启或引导运行会尝试立即把它拉回。")
+
+      true ->
+        tr(lang, "This issue is currently idle. Restart or steer can bring it back into intake immediately when runtime capacity allows.", "该议题当前处于空闲状态。在 runtime 容量允许时，重启或引导运行可以立即把它拉回 intake。")
+    end
+  end
+
+  defp runtime_scope(status) when is_map(status) do
+    field(field(status, "runtime_issue"), "scope")
+  end
+
+  defp runtime_scope(_status), do: nil
 
   defp field(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, String.to_atom(key))

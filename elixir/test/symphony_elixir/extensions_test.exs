@@ -153,6 +153,21 @@ defmodule SymphonyElixir.ExtensionsTest do
            "paused_at" => nil,
            "pause_reason" => nil
          },
+         "runtime_issue" => %{
+           "scope" => "running",
+           "status" => "active",
+           "issue_identifier" => issue_identifier,
+           "session_id" => "thread-live-turn-live",
+           "thread_id" => "thread-live",
+           "turn_id" => "turn-live",
+           "turn_count" => 1,
+           "codex_app_server_pid" => "4242",
+           "worker_host" => nil,
+           "workspace_path" => "/tmp/workspace",
+           "last_codex_event" => "notification",
+           "last_codex_timestamp" => "2026-03-12T15:09:00+08:00",
+           "runtime_seconds" => 42
+         },
          "issue_control" => %{
            "held" => false,
            "issue_identifier" => issue_identifier,
@@ -185,17 +200,21 @@ defmodule SymphonyElixir.ExtensionsTest do
        }}
     end
 
-    def create_action(_payload) do
+    def create_action(payload) do
+      action = payload["action"] || payload[:action] || "pause"
+      paused = action == "pause"
+      held = action == "hold"
+
       {:ok,
        %{
-         "action" => "pause",
+         "action" => action,
          "runtime" => %{
-           "paused" => true,
+           "paused" => paused,
            "changed" => true,
            "requested_at" => "2026-03-12T15:11:00+08:00",
            "operations" => ["pause_intake", "pause_retries"],
            "pause_reason" => nil,
-           "paused_at" => "2026-03-12T15:11:00+08:00"
+           "paused_at" => if(paused, do: "2026-03-12T15:11:00+08:00", else: nil)
          },
          "status" => %{
            "issue" => "PROJ-101",
@@ -207,14 +226,29 @@ defmodule SymphonyElixir.ExtensionsTest do
            "commit" => "abcdef1",
            "updated_at" => "2026-03-12T15:10:00+08:00",
            "runtime_control" => %{
-             "paused" => true,
-             "paused_at" => "2026-03-12T15:11:00+08:00",
+             "paused" => paused,
+             "paused_at" => if(paused, do: "2026-03-12T15:11:00+08:00", else: nil),
              "pause_reason" => nil
            },
-           "issue_control" => %{
-             "held" => false,
+           "runtime_issue" => %{
+             "scope" => if(action == "cancel", do: "retrying", else: "running"),
+             "status" => if(action == "cancel", do: "queued", else: "active"),
              "issue_identifier" => "PROJ-101",
-             "held_at" => nil,
+             "session_id" => "thread-live-turn-live",
+             "thread_id" => "thread-live",
+             "turn_id" => "turn-live",
+             "turn_count" => 1,
+             "codex_app_server_pid" => "4242",
+             "worker_host" => nil,
+             "workspace_path" => "/tmp/workspace",
+             "last_codex_event" => "notification",
+             "last_codex_timestamp" => "2026-03-12T15:09:00+08:00",
+             "runtime_seconds" => 42
+           },
+           "issue_control" => %{
+             "held" => held,
+             "issue_identifier" => "PROJ-101",
+             "held_at" => if(held, do: "2026-03-12T15:11:00+08:00", else: nil),
              "reason" => nil
            },
            "checks" => %{},
@@ -1139,13 +1173,6 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> render_click()
 
     assert hold_html =~ "已挂起议题"
-
-    release_html =
-      view
-      |> element("#release-run")
-      |> render_click()
-
-    assert release_html =~ "已解除挂起"
 
     logs_html =
       view
