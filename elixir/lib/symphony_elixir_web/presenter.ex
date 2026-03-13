@@ -20,7 +20,8 @@ defmodule SymphonyElixirWeb.Presenter do
           running: Enum.map(snapshot.running, &running_entry_payload/1),
           retrying: Enum.map(snapshot.retrying, &retry_entry_payload/1),
           codex_totals: snapshot.codex_totals,
-          rate_limits: snapshot.rate_limits
+          rate_limits: snapshot.rate_limits,
+          control: Map.get(snapshot, :control)
         }
 
       :timeout ->
@@ -57,6 +58,20 @@ defmodule SymphonyElixirWeb.Presenter do
 
       payload ->
         {:ok, Map.update!(payload, :requested_at, &DateTime.to_iso8601/1)}
+    end
+  end
+
+  @spec control_payload(GenServer.name(), String.t(), String.t() | nil) :: {:ok, map()} | {:error, :unavailable}
+  def control_payload(orchestrator, action, reason) do
+    case Orchestrator.set_runtime_control(orchestrator, action, reason) do
+      :unavailable ->
+        {:error, :unavailable}
+
+      payload ->
+        {:ok,
+         payload
+         |> Map.update!(:requested_at, &DateTime.to_iso8601/1)
+         |> Map.put(:action, action)}
     end
   end
 

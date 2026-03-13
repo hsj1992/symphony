@@ -75,6 +75,20 @@ defmodule SymphonyElixir.ExtensionsTest do
     def handle_call(:request_refresh, _from, state) do
       {:reply, Keyword.get(state, :refresh, :unavailable), state}
     end
+
+    def handle_call({:runtime_control, action, reason}, _from, state) do
+      payload =
+        Keyword.get(state, :control, %{
+          paused: action == "pause",
+          changed: true,
+          requested_at: DateTime.utc_now(),
+          operations: ["pause_intake", "pause_retries"],
+          pause_reason: reason,
+          paused_at: DateTime.utc_now()
+        })
+
+      {:reply, payload, state}
+    end
   end
 
   defmodule FakeConsoleClient do
@@ -118,6 +132,11 @@ defmodule SymphonyElixir.ExtensionsTest do
          "branch" => "feat/example-bridge-console",
          "commit" => "abcdef1",
          "updated_at" => "2026-03-12T15:10:00+08:00",
+         "runtime_control" => %{
+           "paused" => false,
+           "paused_at" => nil,
+           "pause_reason" => nil
+         },
          "checks" => %{
            "local_validation" => %{
              "status" => "passed",
@@ -148,6 +167,14 @@ defmodule SymphonyElixir.ExtensionsTest do
       {:ok,
        %{
          "action" => "pause",
+         "runtime" => %{
+           "paused" => true,
+           "changed" => true,
+           "requested_at" => "2026-03-12T15:11:00+08:00",
+           "operations" => ["pause_intake", "pause_retries"],
+           "pause_reason" => nil,
+           "paused_at" => "2026-03-12T15:11:00+08:00"
+         },
          "status" => %{
            "issue" => "PROJ-101",
            "phase" => "handoff",
@@ -157,6 +184,11 @@ defmodule SymphonyElixir.ExtensionsTest do
            "branch" => "feat/example-bridge-console",
            "commit" => "abcdef1",
            "updated_at" => "2026-03-12T15:10:00+08:00",
+           "runtime_control" => %{
+             "paused" => true,
+             "paused_at" => "2026-03-12T15:11:00+08:00",
+             "pause_reason" => nil
+           },
            "checks" => %{},
            "latest_events" => []
          }
@@ -470,7 +502,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                "total_tokens" => 12,
                "seconds_running" => 42.5
              },
-             "rate_limits" => %{"primary" => %{"remaining" => 11}}
+             "rate_limits" => %{"primary" => %{"remaining" => 11}},
+             "control" => nil
            }
 
     conn = get(build_conn(), "/api/v1/MT-HTTP")
@@ -519,6 +552,16 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert %{"queued" => true, "coalesced" => false, "operations" => ["poll", "reconcile"]} =
              json_response(conn, 202)
+
+    conn = post(build_conn(), "/api/v1/control", %{"action" => "pause", "reason" => "manual hold"})
+
+    assert %{
+             "action" => "pause",
+             "paused" => true,
+             "changed" => true,
+             "operations" => ["pause_intake", "pause_retries"],
+             "pause_reason" => "manual hold"
+           } = json_response(conn, 202)
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -555,6 +598,17 @@ defmodule SymphonyElixir.ExtensionsTest do
                  "message" => "Orchestrator is unavailable"
                }
              }
+
+    assert json_response(post(build_conn(), "/api/v1/control", %{"action" => "pause"}), 503) ==
+             %{
+               "error" => %{
+                 "code" => "orchestrator_unavailable",
+                 "message" => "Orchestrator is unavailable"
+               }
+             }
+
+    assert json_response(post(build_conn(), "/api/v1/control", %{"action" => "stop"}), 400) ==
+             %{"error" => %{"code" => "invalid_action", "message" => "Action must be pause or resume"}}
   end
 
   test "phoenix observability api preserves snapshot timeout behavior" do
@@ -723,6 +777,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> render_submit()
 
     assert html =~ "Adapter-backed status loaded successfully"
+    assert html =~ "运行中"
     assert html =~ "Validation passed"
     assert html =~ "worker.frontend"
     assert html =~ "追加指令"

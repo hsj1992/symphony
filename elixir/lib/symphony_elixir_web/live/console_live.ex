@@ -341,6 +341,12 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 <p class="metric-value"><%= field(@status, "next") || tr(@lang, "n/a", "未提供") %></p>
                 <p class="metric-detail"><%= tr(@lang, "Updated", "更新时间") %>：<span class="mono"><%= field(@status, "updated_at") || tr(@lang, "n/a", "未提供") %></span></p>
               </article>
+
+              <article class="metric-card">
+                <p class="metric-label"><%= tr(@lang, "Runtime", "运行时") %></p>
+                <p class="metric-value"><%= runtime_label(field(@status, "runtime_control"), @lang) %></p>
+                <p class="metric-detail"><%= runtime_reason(field(@status, "runtime_control"), @lang) %></p>
+              </article>
             </div>
 
             <div class="section-stack">
@@ -389,8 +395,8 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               <section>
                 <h3 class="section-subtitle"><%= tr(@lang, "Actions", "控制动作") %></h3>
                 <div class="action-row">
-                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause"><%= tr(@lang, "Pause", "暂停") %></button>
-                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume"><%= tr(@lang, "Continue", "继续") %></button>
+                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause"><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
+                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume"><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
                 </div>
 
                 <form id="instruction-form" class="instruction-form" phx-submit="append_instruction">
@@ -665,6 +671,41 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     stream_id = active_stream || default_log_stream_id(logs)
     Enum.find(log_streams(logs), &(&1.id == stream_id))
   end
+
+  defp runtime_label(nil, lang), do: tr(lang, "Unknown", "未知")
+
+  defp runtime_label(runtime_control, lang) when is_map(runtime_control) do
+    if field(runtime_control, "paused") in [true, "true"] do
+      tr(lang, "Paused", "已暂停")
+    else
+      tr(lang, "Running", "运行中")
+    end
+  end
+
+  defp runtime_label(_runtime_control, lang), do: tr(lang, "Unknown", "未知")
+
+  defp runtime_reason(nil, lang), do: tr(lang, "No runtime control state returned.", "当前没有返回运行时控制状态。")
+
+  defp runtime_reason(runtime_control, lang) when is_map(runtime_control) do
+    paused_at = blank_to_nil(field(runtime_control, "paused_at"))
+    pause_reason = blank_to_nil(field(runtime_control, "pause_reason"))
+
+    cond do
+      (field(runtime_control, "paused") in [true, "true"] and pause_reason) && paused_at ->
+        tr(lang, "Paused at #{paused_at}: #{pause_reason}", "于 #{paused_at} 暂停：#{pause_reason}")
+
+      field(runtime_control, "paused") in [true, "true"] and pause_reason ->
+        tr(lang, "Paused: #{pause_reason}", "已暂停：#{pause_reason}")
+
+      field(runtime_control, "paused") in [true, "true"] ->
+        tr(lang, "Dispatch is paused until resume is requested.", "新的 dispatch 已暂停，直到显式恢复。")
+
+      true ->
+        tr(lang, "Dispatch and retry intake are active.", "dispatch 和 retry intake 处于活跃状态。")
+    end
+  end
+
+  defp runtime_reason(_runtime_control, lang), do: tr(lang, "No runtime control state returned.", "当前没有返回运行时控制状态。")
 
   defp field(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, String.to_atom(key))

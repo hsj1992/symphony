@@ -21,6 +21,33 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     send(pid, :stop)
   end
 
+  test "orchestrator runtime control toggles paused state in snapshot" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil, poll_interval_ms: 50)
+
+    orchestrator_name = Module.concat(__MODULE__, :RuntimeControlOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    assert %{"paused" => true} =
+             Orchestrator.set_runtime_control(orchestrator_name, "pause", "manual hold")
+             |> stringify_keys()
+
+    paused_snapshot = GenServer.call(pid, :snapshot)
+    assert %{control: %{paused: true, pause_reason: "manual hold"}} = paused_snapshot
+
+    assert %{"paused" => false} =
+             Orchestrator.set_runtime_control(orchestrator_name, "resume", nil)
+             |> stringify_keys()
+
+    resumed_snapshot = GenServer.call(pid, :snapshot)
+    assert %{control: %{paused: false, pause_reason: nil}} = resumed_snapshot
+  end
+
   test "orchestrator snapshot reflects last codex update and session id" do
     issue_id = "issue-snapshot"
 
@@ -1600,5 +1627,11 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
       {next_tokens, [{timestamp, next_tokens} | acc]}
     end)
     |> elem(1)
+  end
+
+  defp stringify_keys(map) when is_map(map) do
+    map
+    |> Enum.map(fn {key, value} -> {to_string(key), value} end)
+    |> Map.new()
   end
 end
