@@ -552,6 +552,80 @@ pre,
   margin-bottom: 1rem;
 }
 
+.panel-tab-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-bottom: 0.95rem;
+}
+
+.section-header-tight {
+  margin-bottom: 0.85rem;
+}
+
+.timeline-list {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.timeline-item {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 0.9rem 1rem;
+  background: color-mix(in srgb, #fff 94%, var(--accent) 6%);
+}
+
+.timeline-head {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.timeline-time {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.timeline-summary {
+  margin: 0.7rem 0 0;
+  line-height: 1.65;
+}
+
+.timeline-meta {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.inspector-stack {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.inspector-card {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #fff;
+  padding: 0.95rem 1rem;
+  min-width: 0;
+}
+
+.inspector-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.inspector-card-head h4 {
+  margin: 0;
+  font-size: 0.92rem;
+  letter-spacing: -0.01em;
+}
+
 .issue-button {
   border: 0;
   background: none;

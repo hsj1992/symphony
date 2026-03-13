@@ -128,12 +128,19 @@ defmodule SymphonyElixir.ExtensionsTest do
            %{
              "ts" => "2026-03-12T15:08:00+08:00",
              "type" => "validation_passed",
-             "summary" => "Adapter validation passed"
+             "summary" => "Adapter validation passed",
+             "actor" => "worker.frontend"
            }
          ],
          "doctor" => %{"overall_ok" => true},
-         "workpad" => %{"summary" => "Current Status is fresh"},
-         "logs" => %{"agent" => "latest agent log line"}
+         "workpad" => %{
+           "current_status" => "- Phase: validation\n- Summary: Current status is fresh",
+           "execution_timeline" => "| Time | Actor | Event | Summary |\n| --- | --- | --- | --- |\n| 2026-03-12 | symphony | validation_passed | Adapter validation passed |"
+         },
+         "logs" => %{
+           "agent" => "latest agent log line",
+           "raw" => %{"command.log" => "raw command output"}
+         }
        }}
     end
 
@@ -716,8 +723,10 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> render_submit()
 
     assert html =~ "Adapter-backed status loaded successfully"
-    assert html =~ "validation_passed"
+    assert html =~ "Validation passed"
+    assert html =~ "worker.frontend"
     assert html =~ "追加指令"
+    assert html =~ "当前状态"
 
     pause_html =
       view
@@ -725,6 +734,14 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> render_click()
 
     assert pause_html =~ "已记录暂停请求"
+
+    logs_html =
+      view
+      |> element("button[phx-value-panel='logs']")
+      |> render_click()
+
+    assert logs_html =~ "latest agent log line"
+    assert logs_html =~ "command.log"
   end
 
   test "bridge console supports english locale toggle" do
@@ -735,6 +752,21 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "Bridge Console"
     assert html =~ "Auto 15s"
     assert html =~ "Load issue"
+
+    english_detail_html =
+      view
+      |> form("#issue-query-form", %{
+        "issue" => "PROJ-101",
+        "branch" => "",
+        "events" => "10",
+        "include_logs" => "agent",
+        "doctor" => "true",
+        "workpad" => "true"
+      })
+      |> render_submit()
+
+    assert english_detail_html =~ "Timeline"
+    assert english_detail_html =~ "Inspector"
 
     zh_html =
       view
