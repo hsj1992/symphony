@@ -462,6 +462,12 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 <p class="metric-value"><%= issue_control_label(field(@status, "issue_control"), @lang) %></p>
                 <p class="metric-detail"><%= issue_control_reason(field(@status, "issue_control"), @lang) %></p>
               </article>
+
+              <article class="metric-card">
+                <p class="metric-label"><%= tr(@lang, "Live session", "实时会话") %></p>
+                <p class="metric-value mono"><%= runtime_issue_label(field(@status, "runtime_issue"), @lang) %></p>
+                <p class="metric-detail"><%= runtime_issue_detail(field(@status, "runtime_issue"), @lang) %></p>
+              </article>
             </div>
 
             <div class="section-stack">
@@ -1123,6 +1129,68 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp issue_control_reason(_issue_control, lang),
     do: tr(lang, "This issue is eligible for dispatch when the runtime is active.", "该议题在 runtime 活跃时可被派发。")
+
+  defp runtime_issue_label(nil, lang), do: tr(lang, "No live session", "当前没有实时会话")
+
+  defp runtime_issue_label(runtime_issue, lang) when is_map(runtime_issue) do
+    scope = field(runtime_issue, "scope")
+    thread_id = blank_to_nil(field(runtime_issue, "thread_id"))
+    turn_id = blank_to_nil(field(runtime_issue, "turn_id"))
+    session_id = blank_to_nil(field(runtime_issue, "session_id"))
+
+    cond do
+      thread_id && turn_id -> "#{thread_id} / #{turn_id}"
+      session_id -> session_id
+      scope == "retrying" -> tr(lang, "Queued retry", "已排队重试")
+      scope == "running" -> tr(lang, "Running", "运行中")
+      true -> tr(lang, "No live session", "当前没有实时会话")
+    end
+  end
+
+  defp runtime_issue_label(_runtime_issue, lang), do: tr(lang, "No live session", "当前没有实时会话")
+
+  defp runtime_issue_detail(nil, lang),
+    do: tr(lang, "Load a running issue to inspect live session metadata.", "加载一个运行中的议题后，可在这里看到实时会话元数据。")
+
+  defp runtime_issue_detail(runtime_issue, lang) when is_map(runtime_issue) do
+    scope = field(runtime_issue, "scope") || tr(lang, "unknown", "未知")
+    pid = blank_to_nil(field(runtime_issue, "codex_app_server_pid"))
+    last_event = blank_to_nil(field(runtime_issue, "last_codex_event"))
+    worker_host = blank_to_nil(field(runtime_issue, "worker_host"))
+    attempt = field(runtime_issue, "attempt")
+    due_in_ms = field(runtime_issue, "due_in_ms")
+
+    cond do
+      scope == "running" ->
+        parts =
+          [
+            tr(lang, "Scope", "范围") <> ": " <> to_string(scope),
+            worker_host && tr(lang, "Worker", "工作节点") <> ": " <> worker_host,
+            pid && tr(lang, "AppServer PID", "AppServer PID") <> ": " <> pid,
+            last_event && tr(lang, "Last event", "最新事件") <> ": " <> to_string(last_event)
+          ]
+          |> Enum.reject(&is_nil/1)
+
+        Enum.join(parts, " | ")
+
+      scope == "retrying" ->
+        parts =
+          [
+            tr(lang, "Scope", "范围") <> ": " <> to_string(scope),
+            is_integer(attempt) && tr(lang, "Attempt", "尝试次数") <> ": " <> Integer.to_string(attempt),
+            is_integer(due_in_ms) && tr(lang, "Due in", "预计开始") <> ": " <> Integer.to_string(due_in_ms) <> "ms"
+          ]
+          |> Enum.reject(&is_nil/1)
+
+        Enum.join(parts, " | ")
+
+      true ->
+        tr(lang, "No live runtime entry returned for this issue.", "当前议题没有返回实时运行条目。")
+    end
+  end
+
+  defp runtime_issue_detail(_runtime_issue, lang),
+    do: tr(lang, "Load a running issue to inspect live session metadata.", "加载一个运行中的议题后，可在这里看到实时会话元数据。")
 
   defp field(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, String.to_atom(key))
