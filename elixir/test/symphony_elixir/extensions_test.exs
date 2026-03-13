@@ -1114,7 +1114,9 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> element("button[phx-value-panel='logs']")
       |> render_click()
 
+    assert logs_html =~ "决策流"
     assert logs_html =~ "latest agent log line"
+    assert logs_html =~ "Adapter validation passed"
     assert logs_html =~ "command.log"
   end
 

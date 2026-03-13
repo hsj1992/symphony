@@ -555,24 +555,60 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 </div>
 
                 <div :if={@detail_panel == "logs"} class="inspector-stack">
-                  <%= if log_streams(field(@status, "logs")) == [] do %>
+                  <%= if not has_console_streams?(@status) do %>
                     <p class="empty-state"><%= tr(@lang, "No logs returned. Reload the issue with agent or raw logs enabled.", "当前没有返回日志。请重新加载议题并启用执行日志或原始日志。") %></p>
                   <% else %>
-                    <div class="panel-tab-row">
-                      <button
-                        :for={stream <- log_streams(field(@status, "logs"))}
-                        type="button"
-                        class={panel_button_class(active_log_stream(@status, @active_log_stream), stream.id)}
-                        phx-click="set_log_stream"
-                        phx-value-stream={stream.id}
-                      ><%= stream.label %></button>
-                    </div>
-                    <article :if={selected_stream = selected_log_stream(field(@status, "logs"), @active_log_stream)} class="inspector-card">
+                    <div class="stream-grid">
+                      <article class="inspector-card stream-card">
+                        <div class="inspector-card-head">
+                          <h4><%= tr(@lang, "Agent stream", "执行流") %></h4>
+                        </div>
+                        <p class="section-copy"><%= tr(@lang, "Latest agent-facing execution output.", "最近的 agent 执行输出。") %></p>
+                        <%= if content = agent_log_content(field(@status, "logs")) do %>
+                          <pre class="code-panel"><%= content %></pre>
+                        <% else %>
+                          <p class="empty-state"><%= tr(@lang, "No agent log returned.", "当前没有返回执行日志。") %></p>
+                        <% end %>
+                      </article>
+
+                      <article class="inspector-card stream-card">
+                        <div class="inspector-card-head">
+                          <h4><%= tr(@lang, "Decision stream", "决策流") %></h4>
+                        </div>
+                        <p class="section-copy"><%= tr(@lang, "Recent orchestration events, summarized as decision traces.", "最近的编排事件，整理为决策轨迹。") %></p>
+                        <%= if content = decision_log_content(field(@status, "latest_events")) do %>
+                          <pre class="code-panel"><%= content %></pre>
+                        <% else %>
+                          <p class="empty-state"><%= tr(@lang, "No decision events returned.", "当前没有返回决策事件。") %></p>
+                        <% end %>
+                      </article>
+
+                      <article class="inspector-card stream-card">
                       <div class="inspector-card-head">
-                        <h4><%= selected_stream.label %></h4>
+                          <h4><%= tr(@lang, "Raw stream", "原始流") %></h4>
                       </div>
-                      <pre class="code-panel"><%= selected_stream.content %></pre>
-                    </article>
+                        <p class="section-copy"><%= tr(@lang, "Raw process/file output from the bridge adapter.", "来自 bridge adapter 的原始进程/文件输出。") %></p>
+                        <%= if raw_log_streams(field(@status, "logs")) == [] do %>
+                          <p class="empty-state"><%= tr(@lang, "No raw log returned.", "当前没有返回原始日志。") %></p>
+                        <% else %>
+                          <div :if={length(raw_log_streams(field(@status, "logs"))) > 1} class="panel-tab-row">
+                            <button
+                              :for={stream <- raw_log_streams(field(@status, "logs"))}
+                              type="button"
+                              class={panel_button_class(active_raw_log_stream(@status, @active_log_stream), stream.id)}
+                              phx-click="set_log_stream"
+                              phx-value-stream={stream.id}
+                            ><%= stream.label %></button>
+                          </div>
+                          <article :if={selected_stream = selected_raw_log_stream(field(@status, "logs"), @active_log_stream)} class="stream-inner-card">
+                            <div class="inspector-card-head">
+                              <h4><%= selected_stream.label %></h4>
+                            </div>
+                            <pre class="code-panel"><%= selected_stream.content %></pre>
+                          </article>
+                        <% end %>
+                      </article>
+                    </div>
                   <% end %>
                 </div>
               </section>
@@ -626,7 +662,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       {:ok, status} ->
         socket
         |> assign(:status, status)
-        |> assign(:active_log_stream, default_log_stream_id(field(status, "logs")))
+        |> assign(:active_log_stream, default_raw_log_stream_id(field(status, "logs")))
         |> assign(:error_message, nil)
 
       {:error, reason} ->
@@ -901,45 +937,77 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp doctor_value(value) when is_number(value), do: to_string(value)
   defp doctor_value(value), do: inspect(value, pretty: true, limit: :infinity)
 
-  defp log_streams(nil), do: []
-
-  defp log_streams(logs) when is_map(logs) do
-    top_level =
-      case blank_to_nil(field(logs, "agent")) do
-        nil -> []
-        content -> [%{id: "agent", label: "Agent", content: content}]
-      end
-
-    raw_streams =
-      case field(logs, "raw") do
-        raw when is_map(raw) ->
-          raw
-          |> Enum.map(fn {key, value} -> %{id: "raw:" <> to_string(key), label: to_string(key), content: to_string(value)} end)
-          |> Enum.sort_by(& &1.label)
-
-        _ ->
-          []
-      end
-
-    top_level ++ raw_streams
+  defp has_console_streams?(status) do
+    present?(agent_log_content(field(status, "logs"))) or
+      present?(decision_log_content(field(status, "latest_events"))) or
+      raw_log_streams(field(status, "logs")) != []
   end
 
-  defp log_streams(_logs), do: []
+  defp agent_log_content(logs) when is_map(logs), do: blank_to_nil(field(logs, "agent"))
+  defp agent_log_content(_logs), do: nil
 
-  defp default_log_stream_id(logs) do
-    case log_streams(logs) do
+  defp decision_log_content(nil), do: nil
+
+  defp decision_log_content(events) when is_list(events) do
+    events
+    |> Enum.map(&decision_event_line/1)
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      lines -> Enum.join(lines, "\n")
+    end
+  end
+
+  defp decision_log_content(_events), do: nil
+
+  defp decision_event_line(event) when is_map(event) do
+    summary = blank_to_nil(field(event, "summary"))
+
+    if summary do
+      ts = blank_to_nil(field(event, "ts")) || "n/a"
+      type = blank_to_nil(field(event, "type")) || "event"
+      actor = blank_to_nil(field(event, "actor"))
+
+      "[#{ts}] #{type}" <>
+        if(actor, do: " @ #{actor}", else: "") <>
+        "\n" <> summary
+    else
+      nil
+    end
+  end
+
+  defp decision_event_line(_event), do: nil
+
+  defp raw_log_streams(nil), do: []
+
+  defp raw_log_streams(logs) when is_map(logs) do
+    case field(logs, "raw") do
+      raw when is_map(raw) ->
+        raw
+        |> Enum.map(fn {key, value} -> %{id: "raw:" <> to_string(key), label: to_string(key), content: to_string(value)} end)
+        |> Enum.sort_by(& &1.label)
+
+      _ ->
+        []
+    end
+  end
+
+  defp raw_log_streams(_logs), do: []
+
+  defp default_raw_log_stream_id(logs) do
+    case raw_log_streams(logs) do
       [first | _rest] -> first.id
       [] -> nil
     end
   end
 
-  defp active_log_stream(status, active_stream) do
-    active_stream || default_log_stream_id(field(status, "logs"))
+  defp active_raw_log_stream(status, active_stream) do
+    active_stream || default_raw_log_stream_id(field(status, "logs"))
   end
 
-  defp selected_log_stream(logs, active_stream) do
-    stream_id = active_stream || default_log_stream_id(logs)
-    Enum.find(log_streams(logs), &(&1.id == stream_id))
+  defp selected_raw_log_stream(logs, active_stream) do
+    stream_id = active_stream || default_raw_log_stream_id(logs)
+    Enum.find(raw_log_streams(logs), &(&1.id == stream_id))
   end
 
   defp runtime_label(nil, lang), do: tr(lang, "Unknown", "未知")

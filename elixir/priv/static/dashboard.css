@@ -604,6 +604,25 @@ pre,
   gap: 0.85rem;
 }
 
+.stream-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.85rem;
+}
+
+.stream-card,
+.stream-inner-card {
+  min-width: 0;
+}
+
+.stream-inner-card {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: color-mix(in srgb, #fff 92%, var(--accent) 8%);
+  padding: 0.85rem 0.9rem;
+  margin-top: 0.85rem;
+}
+
 .inspector-card {
   border: 1px solid var(--line);
   border-radius: 18px;
@@ -659,7 +678,8 @@ pre,
   .console-grid,
   .toolbar-form,
   .instruction-form,
-  .detail-grid {
+  .detail-grid,
+  .stream-grid {
     grid-template-columns: 1fr;
   }
 }
