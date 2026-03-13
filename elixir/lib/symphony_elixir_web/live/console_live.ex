@@ -19,6 +19,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       |> assign(:lang, lang)
       |> assign(:adapters, adapters)
       |> assign(:selected_adapter, selected_adapter)
+      |> assign(:profiles, [])
+      |> assign(:selected_profile, nil)
+      |> assign(:profile_defaults_for, nil)
       |> assign(:meta, nil)
       |> assign(:runs, [])
       |> assign(:status, nil)
@@ -52,12 +55,14 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     lang = normalize_lang(params["lang"])
     adapters = adapter_options()
     selected_adapter = selected_adapter_id(adapters, params["adapter"])
+    selected_profile = blank_to_nil(params["profile"])
 
     {:noreply,
      socket
      |> assign(:lang, lang)
      |> assign(:adapters, adapters)
      |> assign(:selected_adapter, selected_adapter)
+     |> assign(:selected_profile, selected_profile)
      |> assign(:log_options, log_options(lang))
      |> assign(:refresh_options, refresh_options(lang))
      |> refresh_console(load_status?: not is_nil(socket.assigns.selected_issue))}
@@ -76,7 +81,11 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   @impl true
   def handle_event("set_lang", %{"lang" => lang}, socket) do
-    {:noreply, push_patch(socket, to: console_path(normalize_lang(lang), socket.assigns.selected_adapter))}
+    {:noreply,
+     push_patch(
+       socket,
+       to: console_path(normalize_lang(lang), socket.assigns.selected_adapter, socket.assigns.selected_profile)
+     )}
   end
 
   @impl true
@@ -84,12 +93,25 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     {:noreply,
      socket
      |> assign(:selected_adapter, selected_adapter_id(socket.assigns.adapters, adapter_id))
+     |> assign(:selected_profile, nil)
+     |> assign(:profile_defaults_for, nil)
+     |> assign(:profiles, [])
      |> assign(:selected_issue, nil)
      |> assign(:issue_query, "")
      |> assign(:branch_override, "")
      |> assign(:status, nil)
+     |> assign(:instruction_message, "")
      |> assign(:active_log_stream, nil)
-     |> push_patch(to: console_path(socket.assigns.lang, adapter_id))}
+     |> push_patch(to: console_path(socket.assigns.lang, adapter_id, nil))}
+  end
+
+  @impl true
+  def handle_event("set_profile", %{"profile" => profile_id}, socket) do
+    {:noreply,
+     socket
+     |> assign(:selected_profile, blank_to_nil(profile_id))
+     |> assign(:profile_defaults_for, nil)
+     |> push_patch(to: console_path(socket.assigns.lang, socket.assigns.selected_adapter, blank_to_nil(profile_id)))}
   end
 
   @impl true
@@ -212,6 +234,17 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                   <%= adapter.label %>
                 </option>
               </select>
+              <select
+                :if={@profiles != []}
+                id="profile-select"
+                class="form-input form-input-compact"
+                phx-change="set_profile"
+                name="profile"
+              >
+                <option :for={profile <- @profiles} value={profile_id(profile)} selected={profile_id(profile) == @selected_profile}>
+                  <%= profile_label(profile, @lang) %>
+                </option>
+              </select>
               <button id="lang-zh" type="button" class={locale_button_class(@lang, "zh")} phx-click="set_lang" phx-value-lang="zh">中文</button>
               <button id="lang-en" type="button" class={locale_button_class(@lang, "en")} phx-click="set_lang" phx-value-lang="en">EN</button>
             </div>
@@ -248,6 +281,18 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         </div>
 
         <form id="issue-query-form" class="toolbar-form" phx-submit="load_issue">
+          <div :if={selected_profile(@profiles, @selected_profile)} class="toolbar-field toolbar-field-full">
+            <span><%= tr(@lang, "Execution profile", "执行模板") %></span>
+            <div class="inspector-card">
+              <div class="inspector-card-head">
+                <h4><%= profile_label(selected_profile(@profiles, @selected_profile), @lang) %></h4>
+              </div>
+              <p class="section-copy">
+                <%= profile_description(selected_profile(@profiles, @selected_profile), @lang) %>
+              </p>
+            </div>
+          </div>
+
           <label class="toolbar-field">
             <span><%= tr(@lang, "Issue key", "议题编号") %></span>
             <input class="form-input" type="text" name="issue" value={@issue_query} placeholder={tr(@lang, "For example PROJ-123", "例如 PROJ-123")} />
@@ -438,7 +483,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                     <textarea
                       class="form-input form-textarea"
                       name="message"
-                      placeholder={tr(@lang, "Add a new instruction for this run", "为当前运行补充新的执行指令")}
+                      placeholder={instruction_placeholder(@profiles, @selected_profile, @lang)}
                     ><%= @instruction_message %></textarea>
                   </label>
 
@@ -538,7 +583,12 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       case client_meta(socket.assigns.selected_adapter) do
         {:ok, meta} ->
           events_limit = socket.assigns.events_limit || field(meta, "default_event_limit") || 10
-          assign(socket, :meta, meta) |> assign(:events_limit, events_limit) |> assign(:error_message, nil)
+
+          socket
+          |> assign(:meta, meta)
+          |> assign(:events_limit, events_limit)
+          |> assign(:error_message, nil)
+          |> reconcile_profile_assigns(meta)
 
         {:error, reason} ->
           assign(socket, :error_message, error_message(socket.assigns.lang, reason))
@@ -589,6 +639,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       %{
         issue: socket.assigns.selected_issue,
         action: params["action"],
+        profile: socket.assigns.selected_profile,
         branch: blank_to_nil(socket.assigns.branch_override),
         message: blank_to_nil(params["message"]),
         syncLinear: params["sync_linear"]
@@ -609,7 +660,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   end
 
   defp client_module do
-    Application.get_env(:symphony_elixir, :console_client_module, SymphonyElixir.ConsoleClient)
+    module = Application.get_env(:symphony_elixir, :console_client_module, SymphonyElixir.ConsoleClient)
+    if is_atom(module), do: Code.ensure_loaded(module)
+    module
   end
 
   defp adapter_options do
@@ -679,6 +732,118 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp adapter_label(nil), do: "Project"
   defp adapter_label(meta), do: field(meta, "repo_name") || field(meta, "repo_key") || "Project"
+
+  defp reconcile_profile_assigns(socket, meta) do
+    previous_selected_profile = socket.assigns.selected_profile
+    profiles = profile_options(meta)
+    selected_profile = selected_profile_id(profiles, socket.assigns.selected_profile, default_profile_id(meta, profiles))
+
+    socket =
+      socket
+      |> assign(:profiles, profiles)
+      |> assign(:selected_profile, selected_profile)
+
+    if selected_profile != socket.assigns.profile_defaults_for or previous_selected_profile != selected_profile do
+      apply_profile_defaults(socket, selected_profile(profiles, selected_profile))
+    else
+      socket
+    end
+  end
+
+  defp profile_options(meta) when is_map(meta) do
+    case field(meta, "profiles") do
+      profiles when is_list(profiles) -> Enum.filter(profiles, &present?(profile_id(&1)))
+      _ -> []
+    end
+  end
+
+  defp profile_options(_meta), do: []
+
+  defp default_profile_id(meta, profiles) do
+    requested = blank_to_nil(field(meta, "default_profile"))
+
+    if requested && Enum.any?(profiles, &(profile_id(&1) == requested)) do
+      requested
+    else
+      case profiles do
+        [first | _rest] -> profile_id(first)
+        [] -> nil
+      end
+    end
+  end
+
+  defp selected_profile_id([], _requested, _default_id), do: nil
+  defp selected_profile_id(profiles, requested, default_id) when requested in [nil, ""], do: default_id || profile_id(hd(profiles))
+
+  defp selected_profile_id(profiles, requested, default_id) do
+    if Enum.any?(profiles, &(profile_id(&1) == requested)) do
+      requested
+    else
+      default_id || profile_id(hd(profiles))
+    end
+  end
+
+  defp selected_profile(profiles, selected_id) when is_list(profiles) do
+    Enum.find(profiles, &(profile_id(&1) == selected_id))
+  end
+
+  defp apply_profile_defaults(socket, nil), do: socket
+
+  defp apply_profile_defaults(socket, profile) do
+    defaults = field(profile, "defaults")
+    template = localized_field(profile, "instructionTemplate", socket.assigns.lang)
+    profile_id = profile_id(profile)
+
+    socket
+    |> maybe_assign(:events_limit, profile_default(defaults, "events", socket.assigns.events_limit))
+    |> maybe_assign(:include_logs, profile_default(defaults, "includeLogs", socket.assigns.include_logs))
+    |> maybe_assign(:include_doctor, profile_default(defaults, "includeDoctor", socket.assigns.include_doctor))
+    |> maybe_assign(:include_workpad, profile_default(defaults, "includeWorkpad", socket.assigns.include_workpad))
+    |> maybe_assign(:sync_linear, profile_default(defaults, "syncLinear", socket.assigns.sync_linear))
+    |> maybe_assign(
+      :instruction_message,
+      if(blank_to_nil(socket.assigns.instruction_message),
+        do: socket.assigns.instruction_message,
+        else: template
+      )
+    )
+    |> assign(:profile_defaults_for, profile_id)
+  end
+
+  defp profile_default(defaults, key, fallback) when is_map(defaults) do
+    case field(defaults, key) do
+      nil -> fallback
+      value -> value
+    end
+  end
+
+  defp profile_default(_defaults, _key, fallback), do: fallback
+
+  defp maybe_assign(socket, _key, nil), do: socket
+  defp maybe_assign(socket, key, value), do: assign(socket, key, value)
+
+  defp profile_id(profile), do: blank_to_nil(field(profile, "id"))
+  defp profile_label(profile, lang), do: localized_field(profile, "label", lang) || profile_id(profile) || "Profile"
+  defp profile_description(profile, lang), do: localized_field(profile, "description", lang) || tr(lang, "No profile description.", "当前没有模板说明。")
+
+  defp instruction_placeholder(profiles, selected_id, lang) do
+    case selected_profile(profiles, selected_id) do
+      nil ->
+        tr(lang, "Add a new instruction for this run", "为当前运行补充新的执行指令")
+
+      profile ->
+        localized_field(profile, "instructionTemplate", lang) ||
+          tr(lang, "Add a new instruction for this run", "为当前运行补充新的执行指令")
+    end
+  end
+
+  defp localized_field(profile, key, lang) do
+    case field(profile, key) do
+      text when is_binary(text) -> blank_to_nil(text)
+      localized when is_map(localized) -> blank_to_nil(field(localized, lang) || field(localized, "zh") || field(localized, "en"))
+      _ -> nil
+    end
+  end
 
   defp refresh_selected?(value, refresh_interval_ms) do
     selected =
@@ -859,11 +1024,12 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp normalize_lang("zh"), do: "zh"
   defp normalize_lang(_lang), do: @default_lang
 
-  defp console_path(lang, adapter_id) do
+  defp console_path(lang, adapter_id, profile_id) do
     query =
       %{}
       |> maybe_put_query("lang", lang)
       |> maybe_put_query("adapter", adapter_id)
+      |> maybe_put_query("profile", profile_id)
       |> URI.encode_query()
 
     if query == "" do

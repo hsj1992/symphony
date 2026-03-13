@@ -199,6 +199,13 @@ export SYMPHONY_CONSOLE_ADAPTERS_JSON='[
 When multiple adapters are configured, the console shows a project switcher and also accepts
 `/console?adapter=<id>`.
 
+If a project bridge exposes `profiles` in `/api/v1/symphony/meta`, the console also shows a
+profile switcher. Profiles can provide:
+
+- localized labels and descriptions
+- default console settings such as event count, log mode, doctor/workpad inclusion, and Linear sync
+- an instruction template that pre-fills the action composer when a profile is selected
+
 For a split deployment that keeps workflow tooling outside the product application, the recommended topology is:
 
 - `Symphony console` on `http://127.0.0.1:4100`

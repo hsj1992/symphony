@@ -331,9 +331,139 @@ defmodule SymphonyElixir.ExtensionsTest do
     defp default_issue(_adapter_id), do: "ALPHA-101"
   end
 
+  defmodule ProfileConsoleClient do
+    def meta do
+      {:ok,
+       %{
+         "repo_key" => "sample-project",
+         "repo_name" => "Sample Project",
+         "issue_prefix" => "PROJ",
+         "supports" => %{
+           "recent_runs" => true,
+           "doctor" => true,
+           "workpad" => true,
+           "actions" => true,
+           "profiles" => true
+         },
+         "default_event_limit" => 10,
+         "default_refresh_seconds" => 15,
+         "default_profile" => "frontend-fix",
+         "profiles" => [
+           %{
+             "id" => "frontend-fix",
+             "label" => %{"zh" => "前端修复", "en" => "Frontend Fix"},
+             "description" => %{
+               "zh" => "默认保留执行日志与 doctor。",
+               "en" => "Keep agent logs and doctor enabled by default."
+             },
+             "defaults" => %{
+               "events" => 12,
+               "includeLogs" => "agent",
+               "includeDoctor" => true,
+               "includeWorkpad" => true,
+               "syncLinear" => true
+             },
+             "instructionTemplate" => %{
+               "zh" => "聚焦 frontend/ 影响面，先修复行为回归。",
+               "en" => "Focus on frontend/ blast radius and fix regressions first."
+             }
+           },
+           %{
+             "id" => "ops-triage",
+             "label" => %{"zh" => "运维排障", "en" => "Ops Triage"},
+             "description" => %{
+               "zh" => "默认打开全部日志并优先看运行时状态。",
+               "en" => "Enable all logs and prioritize runtime state by default."
+             },
+             "defaults" => %{
+               "events" => 20,
+               "includeLogs" => "all",
+               "includeDoctor" => true,
+               "includeWorkpad" => true,
+               "syncLinear" => false
+             },
+             "instructionTemplate" => %{
+               "zh" => "先检查 runtime、doctor 与 CI，再决定人工干预。",
+               "en" => "Check runtime, doctor, and CI before deciding on manual intervention."
+             }
+           }
+         ]
+       }}
+    end
+
+    def list_runs(_limit) do
+      {:ok,
+       [
+         %{
+           "issue" => "PROJ-101",
+           "phase" => "validation",
+           "route_hint" => "Merging",
+           "updated_at" => "2026-03-13T18:00:00+08:00"
+         }
+       ]}
+    end
+
+    def get_status(issue_identifier, _opts) do
+      {:ok,
+       %{
+         "issue" => issue_identifier,
+         "phase" => "handoff",
+         "summary" => "Profile-backed status loaded successfully",
+         "next" => "Wait for remote CI to finish",
+         "route_hint" => "Merging",
+         "branch" => "feat/profile-console",
+         "commit" => "fedcba9",
+         "updated_at" => "2026-03-13T18:10:00+08:00",
+         "runtime_control" => %{
+           "paused" => false,
+           "paused_at" => nil,
+           "pause_reason" => nil
+         },
+         "checks" => %{},
+         "latest_events" => [],
+         "doctor" => %{"overall_ok" => true},
+         "workpad" => %{
+           "current_status" => "- Phase: validation\n- Summary: Profile current status"
+         },
+         "logs" => %{
+           "agent" => "profile agent log line"
+         }
+       }}
+    end
+
+    def create_action(payload) do
+      if recipient = Application.get_env(:symphony_elixir, :profile_console_recipient) do
+        send(recipient, {:profile_console_action, payload})
+      end
+
+      {:ok,
+       %{
+         "action" => payload["action"] || payload[:action] || "instruction",
+         "status" => %{
+           "issue" => "PROJ-101",
+           "phase" => "handoff",
+           "summary" => "Profile-backed status loaded successfully",
+           "next" => "Wait for remote CI to finish",
+           "route_hint" => "Merging",
+           "branch" => "feat/profile-console",
+           "commit" => "fedcba9",
+           "updated_at" => "2026-03-13T18:10:00+08:00",
+           "runtime_control" => %{
+             "paused" => false,
+             "paused_at" => nil,
+             "pause_reason" => nil
+           },
+           "checks" => %{},
+           "latest_events" => []
+         }
+       }}
+    end
+  end
+
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
     console_client_module = Application.get_env(:symphony_elixir, :console_client_module)
+    profile_console_recipient = Application.get_env(:symphony_elixir, :profile_console_recipient)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
@@ -346,6 +476,12 @@ defmodule SymphonyElixir.ExtensionsTest do
         Application.delete_env(:symphony_elixir, :console_client_module)
       else
         Application.put_env(:symphony_elixir, :console_client_module, console_client_module)
+      end
+
+      if is_nil(profile_console_recipient) do
+        Application.delete_env(:symphony_elixir, :profile_console_recipient)
+      else
+        Application.put_env(:symphony_elixir, :profile_console_recipient, profile_console_recipient)
       end
     end)
 
@@ -1005,6 +1141,50 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert zh_html =~ "工作流控制台"
     assert zh_html =~ "Alpha Project"
+  end
+
+  test "bridge console applies project profiles and includes the selected profile in actions" do
+    Application.put_env(:symphony_elixir, :console_client_module, ProfileConsoleClient)
+    Application.put_env(:symphony_elixir, :profile_console_recipient, self())
+    start_test_endpoint([])
+
+    {:ok, view, html} = live(build_conn(), "/console?lang=en")
+    assert html =~ "Frontend Fix"
+    assert html =~ "Keep agent logs and doctor enabled by default."
+    assert html =~ ~s(value="12")
+
+    render_change(view, "set_profile", %{"profile" => "ops-triage"})
+    assert_patch(view, "/console?lang=en&profile=ops-triage")
+    ops_html = render(view)
+    assert ops_html =~ "Ops Triage"
+    assert ops_html =~ "Enable all logs and prioritize runtime state by default."
+    assert ops_html =~ ~s(value="20")
+
+    _detail_html =
+      view
+      |> form("#issue-query-form", %{
+        "issue" => "PROJ-101",
+        "branch" => "",
+        "events" => "20",
+        "include_logs" => "all",
+        "doctor" => "true",
+        "workpad" => "true"
+      })
+      |> render_submit()
+
+    instruction_html =
+      view
+      |> form("#instruction-form", %{
+        "message" => "Check runtime saturation first",
+        "sync_linear" => "true"
+      })
+      |> render_submit()
+
+    assert instruction_html =~ "Instruction appended"
+
+    assert_receive {:profile_console_action, payload}
+    assert (payload["profile"] || payload[:profile]) == "ops-triage"
+    assert (payload["action"] || payload[:action]) == "instruction"
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
