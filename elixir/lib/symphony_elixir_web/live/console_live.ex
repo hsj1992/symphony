@@ -5,31 +5,23 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
 
+  @default_lang "zh"
   @default_refresh_ms 15_000
-  @refresh_options [
-    {"关闭", "off"},
-    {"15s", "15000"},
-    {"30s", "30000"},
-    {"60s", "60000"}
-  ]
-  @log_options [
-    {"不包含日志", "none"},
-    {"执行日志", "agent"},
-    {"原始日志", "raw"},
-    {"全部日志", "all"}
-  ]
 
   @impl true
   def mount(_params, _session, socket) do
+    lang = @default_lang
+
     socket =
       socket
+      |> assign(:lang, lang)
       |> assign(:meta, nil)
       |> assign(:runs, [])
       |> assign(:status, nil)
       |> assign(:selected_issue, nil)
       |> assign(:error_message, nil)
-      |> assign(:log_options, @log_options)
-      |> assign(:refresh_options, @refresh_options)
+      |> assign(:log_options, log_options(lang))
+      |> assign(:refresh_options, refresh_options(lang))
       |> assign(:issue_query, "")
       |> assign(:branch_override, "")
       |> assign(:events_limit, 10)
@@ -50,6 +42,17 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   end
 
   @impl true
+  def handle_params(params, _uri, socket) do
+    lang = normalize_lang(params["lang"])
+
+    {:noreply,
+     socket
+     |> assign(:lang, lang)
+     |> assign(:log_options, log_options(lang))
+     |> assign(:refresh_options, refresh_options(lang))}
+  end
+
+  @impl true
   def handle_info(:refresh_tick, socket) do
     schedule_refresh(socket.assigns.refresh_interval_ms)
     {:noreply, refresh_console(socket, load_status?: not is_nil(socket.assigns.selected_issue))}
@@ -58,6 +61,11 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   @impl true
   def handle_event("refresh", _params, socket) do
     {:noreply, refresh_console(socket, load_status?: not is_nil(socket.assigns.selected_issue))}
+  end
+
+  @impl true
+  def handle_event("set_lang", %{"lang" => lang}, socket) do
+    {:noreply, push_patch(socket, to: console_path(normalize_lang(lang)))}
   end
 
   @impl true
@@ -84,7 +92,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
     case String.trim(socket.assigns.issue_query) do
       "" ->
-        {:noreply, put_flash(socket, :error, "必须先输入议题编号")}
+        {:noreply, put_flash(socket, :error, tr(socket.assigns.lang, "Issue key is required", "必须先输入议题编号"))}
 
       issue ->
         {:noreply,
@@ -122,7 +130,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       |> assign(:sync_linear, truthy?(sync_linear))
 
     if String.trim(socket.assigns.instruction_message) == "" do
-      {:noreply, put_flash(socket, :error, "补充指令不能为空")}
+      {:noreply, put_flash(socket, :error, tr(socket.assigns.lang, "Instruction cannot be empty", "补充指令不能为空"))}
     else
       {:noreply,
        socket
@@ -142,10 +150,10 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       <header class="hero-card">
         <div class="hero-grid">
           <div>
-            <p class="eyebrow">Symphony 工作流</p>
-            <h1 class="hero-title">工作流控制台</h1>
+            <p class="eyebrow"><%= tr(@lang, "Symphony Workflow", "Symphony 工作流") %></p>
+            <h1 class="hero-title"><%= tr(@lang, "Bridge Console", "工作流控制台") %></h1>
             <p class="hero-copy">
-              这是独立于业务前后端的 Symphony 工作流控制台。最近运行、议题详情和控制动作都通过 bridge API 完成，而不是嵌入到产品系统里。
+              <%= tr(@lang, "This is the standalone Symphony workflow console. Recent runs, issue detail, and control actions all flow through the bridge API instead of being embedded into the product application.", "这是独立于业务前后端的 Symphony 工作流控制台。最近运行、议题详情和控制动作都通过 bridge API 完成，而不是嵌入到产品系统里。") %>
             </p>
           </div>
 
@@ -156,8 +164,12 @@ defmodule SymphonyElixirWeb.ConsoleLive do
             </span>
             <span class="status-badge status-badge-offline">
               <span class="status-badge-dot"></span>
-              <%= if @refresh_interval_ms > 0, do: "自动 #{div(@refresh_interval_ms, 1000)}s", else: "手动刷新" %>
+              <%= refresh_badge_label(@lang, @refresh_interval_ms) %>
             </span>
+            <div class="locale-switch">
+              <button id="lang-zh" type="button" class={locale_button_class(@lang, "zh")} phx-click="set_lang" phx-value-lang="zh">中文</button>
+              <button id="lang-en" type="button" class={locale_button_class(@lang, "en")} phx-click="set_lang" phx-value-lang="en">EN</button>
+            </div>
           </div>
         </div>
       </header>
@@ -176,7 +188,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
       <%= if @error_message do %>
         <section class="error-card">
-          <h2 class="error-title">Bridge 服务不可用</h2>
+          <h2 class="error-title"><%= tr(@lang, "Bridge unavailable", "Bridge 服务不可用") %></h2>
           <p class="error-copy"><%= @error_message %></p>
         </section>
       <% end %>
@@ -184,30 +196,30 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       <section class="section-card">
         <div class="section-header">
           <div>
-            <h2 class="section-title">控制面板</h2>
-            <p class="section-copy">从 bridge 加载议题，按需查看 doctor、workpad、日志，并调整刷新策略。</p>
+            <h2 class="section-title"><%= tr(@lang, "Controls", "控制面板") %></h2>
+            <p class="section-copy"><%= tr(@lang, "Load an issue from the bridge, tune refresh, and include doctor/workpad/log data on demand.", "从 bridge 加载议题，按需查看 doctor、workpad、日志，并调整刷新策略。") %></p>
           </div>
-          <button type="button" class="subtle-button" phx-click="refresh">立即刷新</button>
+          <button type="button" class="subtle-button" phx-click="refresh"><%= tr(@lang, "Refresh now", "立即刷新") %></button>
         </div>
 
         <form id="issue-query-form" class="toolbar-form" phx-submit="load_issue">
           <label class="toolbar-field">
-            <span>议题编号</span>
-            <input class="form-input" type="text" name="issue" value={@issue_query} placeholder="例如 PROJ-123" />
+            <span><%= tr(@lang, "Issue key", "议题编号") %></span>
+            <input class="form-input" type="text" name="issue" value={@issue_query} placeholder={tr(@lang, "For example PROJ-123", "例如 PROJ-123")} />
           </label>
 
           <label class="toolbar-field">
-            <span>分支覆盖</span>
-            <input class="form-input" type="text" name="branch" value={@branch_override} placeholder="可选" />
+            <span><%= tr(@lang, "Branch override", "分支覆盖") %></span>
+            <input class="form-input" type="text" name="branch" value={@branch_override} placeholder={tr(@lang, "Optional", "可选")} />
           </label>
 
           <label class="toolbar-field">
-            <span>事件条数</span>
+            <span><%= tr(@lang, "Events", "事件条数") %></span>
             <input class="form-input" type="number" min="1" max="50" name="events" value={@events_limit} />
           </label>
 
           <label class="toolbar-field">
-            <span>日志范围</span>
+            <span><%= tr(@lang, "Logs", "日志范围") %></span>
             <select class="form-input" name="include_logs">
               <option :for={{label, value} <- @log_options} value={value} selected={value == @include_logs}>
                 <%= label %>
@@ -216,7 +228,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
           </label>
 
           <label class="toolbar-field">
-            <span>自动刷新</span>
+            <span><%= tr(@lang, "Auto refresh", "自动刷新") %></span>
             <select class="form-input" name="refresh_interval" phx-change="set_refresh_interval">
               <option :for={{label, value} <- @refresh_options} value={value} selected={refresh_selected?(value, @refresh_interval_ms)}>
                 <%= label %>
@@ -226,15 +238,15 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
           <label class="checkbox-field">
             <input type="checkbox" name="doctor" value="true" checked={@include_doctor} />
-            <span>包含 doctor</span>
+            <span><%= tr(@lang, "Include doctor", "包含 doctor") %></span>
           </label>
 
           <label class="checkbox-field">
             <input type="checkbox" name="workpad" value="true" checked={@include_workpad} />
-            <span>包含 workpad</span>
+            <span><%= tr(@lang, "Include workpad", "包含 workpad") %></span>
           </label>
 
-          <button type="submit" class="subtle-button subtle-button-primary">加载议题</button>
+          <button type="submit" class="subtle-button subtle-button-primary"><%= tr(@lang, "Load issue", "加载议题") %></button>
         </form>
       </section>
 
@@ -242,22 +254,22 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         <section class="section-card">
           <div class="section-header">
             <div>
-              <h2 class="section-title">最近运行</h2>
-              <p class="section-copy">来自项目本地 `/runs` 的 bridge 运行态。</p>
+              <h2 class="section-title"><%= tr(@lang, "Recent runs", "最近运行") %></h2>
+              <p class="section-copy"><%= tr(@lang, "Project-local bridge state from `/runs`.", "来自项目本地 `/runs` 的 bridge 运行态。") %></p>
             </div>
           </div>
 
           <%= if @runs == [] do %>
-        <p class="empty-state">bridge 还没有返回最近运行数据。</p>
+        <p class="empty-state"><%= tr(@lang, "The bridge has not returned any recent runs yet.", "bridge 还没有返回最近运行数据。") %></p>
           <% else %>
             <div class="table-wrap">
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th>议题</th>
-                    <th>阶段</th>
-                    <th>路由</th>
-                    <th>更新时间</th>
+                    <th><%= tr(@lang, "Issue", "议题") %></th>
+                    <th><%= tr(@lang, "Phase", "阶段") %></th>
+                    <th><%= tr(@lang, "Route", "路由") %></th>
+                    <th><%= tr(@lang, "Updated", "更新时间") %></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -272,9 +284,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                         <%= field(run, "issue") %>
                       </button>
                     </td>
-                    <td><span class={state_badge_class(field(run, "phase"))}><%= field(run, "phase") || "未提供" %></span></td>
-                    <td><%= field(run, "route_hint") || "未提供" %></td>
-                    <td class="mono"><%= field(run, "updated_at") || "未提供" %></td>
+                    <td><span class={state_badge_class(field(run, "phase"))}><%= field(run, "phase") || tr(@lang, "n/a", "未提供") %></span></td>
+                    <td><%= field(run, "route_hint") || tr(@lang, "n/a", "未提供") %></td>
+                    <td class="mono"><%= field(run, "updated_at") || tr(@lang, "n/a", "未提供") %></td>
                   </tr>
                 </tbody>
               </table>
@@ -285,57 +297,57 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         <section class="section-card">
           <div class="section-header">
             <div>
-              <h2 class="section-title">运行详情</h2>
-              <p class="section-copy">展示当前选中议题的 `/status` 聚合结果。</p>
+              <h2 class="section-title"><%= tr(@lang, "Run detail", "运行详情") %></h2>
+              <p class="section-copy"><%= tr(@lang, "Loaded from `/status` for the selected issue.", "展示当前选中议题的 `/status` 聚合结果。") %></p>
             </div>
           </div>
 
           <%= if is_nil(@status) do %>
-            <p class="empty-state">先加载一个议题，才能查看当前状态、检查结果和控制动作。</p>
+            <p class="empty-state"><%= tr(@lang, "Load an issue to inspect current status, checks, and actions.", "先加载一个议题，才能查看当前状态、检查结果和控制动作。") %></p>
           <% else %>
             <div class="detail-grid">
               <article class="metric-card">
-                <p class="metric-label">议题</p>
+                <p class="metric-label"><%= tr(@lang, "Issue", "议题") %></p>
                 <p class="metric-value"><%= field(@status, "issue") %></p>
-                <p class="metric-detail"><%= field(@status, "summary") || "未提供" %></p>
+                <p class="metric-detail"><%= field(@status, "summary") || tr(@lang, "n/a", "未提供") %></p>
               </article>
 
               <article class="metric-card">
-                <p class="metric-label">阶段</p>
-                <p class="metric-value"><%= field(@status, "phase") || "未提供" %></p>
-                <p class="metric-detail">路由提示：<%= field(@status, "route_hint") || "未提供" %></p>
+                <p class="metric-label"><%= tr(@lang, "Phase", "阶段") %></p>
+                <p class="metric-value"><%= field(@status, "phase") || tr(@lang, "n/a", "未提供") %></p>
+                <p class="metric-detail"><%= tr(@lang, "Route hint", "路由提示") %>：<%= field(@status, "route_hint") || tr(@lang, "n/a", "未提供") %></p>
               </article>
 
               <article class="metric-card">
-                <p class="metric-label">分支 / 提交</p>
-                <p class="metric-value mono"><%= field(@status, "branch") || "未提供" %></p>
-                <p class="metric-detail mono"><%= field(@status, "commit") || "未提供" %></p>
+                <p class="metric-label"><%= tr(@lang, "Branch / commit", "分支 / 提交") %></p>
+                <p class="metric-value mono"><%= field(@status, "branch") || tr(@lang, "n/a", "未提供") %></p>
+                <p class="metric-detail mono"><%= field(@status, "commit") || tr(@lang, "n/a", "未提供") %></p>
               </article>
 
               <article class="metric-card">
-                <p class="metric-label">下一步</p>
-                <p class="metric-value"><%= field(@status, "next") || "未提供" %></p>
-                <p class="metric-detail">更新时间：<span class="mono"><%= field(@status, "updated_at") || "未提供" %></span></p>
+                <p class="metric-label"><%= tr(@lang, "Next", "下一步") %></p>
+                <p class="metric-value"><%= field(@status, "next") || tr(@lang, "n/a", "未提供") %></p>
+                <p class="metric-detail"><%= tr(@lang, "Updated", "更新时间") %>：<span class="mono"><%= field(@status, "updated_at") || tr(@lang, "n/a", "未提供") %></span></p>
               </article>
             </div>
 
             <div class="section-stack">
               <section>
-                <h3 class="section-subtitle">检查项</h3>
+                <h3 class="section-subtitle"><%= tr(@lang, "Checks", "检查项") %></h3>
                 <div class="table-wrap">
                   <table class="data-table">
                     <thead>
                       <tr>
-                        <th>检查项</th>
-                        <th>状态</th>
-                        <th>摘要</th>
+                        <th><%= tr(@lang, "Check", "检查项") %></th>
+                        <th><%= tr(@lang, "Status", "状态") %></th>
+                        <th><%= tr(@lang, "Summary", "摘要") %></th>
                       </tr>
                     </thead>
                     <tbody>
                       <tr :for={{name, payload} <- normalized_checks(field(@status, "checks"))}>
                         <td><%= name %></td>
-                        <td><span class={state_badge_class(field(payload, "status"))}><%= field(payload, "status") || "未提供" %></span></td>
-                        <td><%= field(payload, "summary") || "未提供" %></td>
+                        <td><span class={state_badge_class(field(payload, "status"))}><%= field(payload, "status") || tr(@lang, "n/a", "未提供") %></span></td>
+                        <td><%= field(payload, "summary") || tr(@lang, "n/a", "未提供") %></td>
                       </tr>
                     </tbody>
                   </table>
@@ -343,24 +355,24 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               </section>
 
               <section>
-                <h3 class="section-subtitle">最新事件</h3>
+                <h3 class="section-subtitle"><%= tr(@lang, "Latest events", "最新事件") %></h3>
                 <%= if normalized_events(field(@status, "latest_events")) == [] do %>
-                  <p class="empty-state">当前没有返回事件。</p>
+                  <p class="empty-state"><%= tr(@lang, "No events returned.", "当前没有返回事件。") %></p>
                 <% else %>
                   <div class="table-wrap">
                     <table class="data-table">
                       <thead>
                         <tr>
-                          <th>时间</th>
-                          <th>类型</th>
-                          <th>摘要</th>
+                          <th><%= tr(@lang, "Time", "时间") %></th>
+                          <th><%= tr(@lang, "Type", "类型") %></th>
+                          <th><%= tr(@lang, "Summary", "摘要") %></th>
                         </tr>
                       </thead>
                       <tbody>
                         <tr :for={event <- normalized_events(field(@status, "latest_events"))}>
-                          <td class="mono"><%= field(event, "ts") || "未提供" %></td>
-                          <td><%= field(event, "type") || "未提供" %></td>
-                          <td><%= field(event, "summary") || "未提供" %></td>
+                          <td class="mono"><%= field(event, "ts") || tr(@lang, "n/a", "未提供") %></td>
+                          <td><%= field(event, "type") || tr(@lang, "n/a", "未提供") %></td>
+                          <td><%= field(event, "summary") || tr(@lang, "n/a", "未提供") %></td>
                         </tr>
                       </tbody>
                     </table>
@@ -369,43 +381,43 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               </section>
 
               <section>
-                <h3 class="section-subtitle">控制动作</h3>
+                <h3 class="section-subtitle"><%= tr(@lang, "Actions", "控制动作") %></h3>
                 <div class="action-row">
-                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause">暂停</button>
-                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume">继续</button>
+                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause"><%= tr(@lang, "Pause", "暂停") %></button>
+                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume"><%= tr(@lang, "Continue", "继续") %></button>
                 </div>
 
                 <form id="instruction-form" class="instruction-form" phx-submit="append_instruction">
                   <label class="toolbar-field toolbar-field-full">
-                    <span>补充指令</span>
+                    <span><%= tr(@lang, "Append instruction", "补充指令") %></span>
                     <textarea
                       class="form-input form-textarea"
                       name="message"
-                      placeholder="为当前运行补充新的执行指令"
+                      placeholder={tr(@lang, "Add a new instruction for this run", "为当前运行补充新的执行指令")}
                     ><%= @instruction_message %></textarea>
                   </label>
 
                   <label class="checkbox-field">
                     <input type="checkbox" name="sync_linear" value="true" checked={@sync_linear} />
-                    <span>同步到 Linear</span>
+                    <span><%= tr(@lang, "Sync to Linear", "同步到 Linear") %></span>
                   </label>
 
-                  <button type="submit" class="subtle-button subtle-button-primary">追加指令</button>
+                  <button type="submit" class="subtle-button subtle-button-primary"><%= tr(@lang, "Append instruction", "追加指令") %></button>
                 </form>
               </section>
 
               <section :if={present?(field(@status, "doctor"))}>
-                <h3 class="section-subtitle">Doctor 检查</h3>
+                <h3 class="section-subtitle"><%= tr(@lang, "Doctor", "Doctor 检查") %></h3>
                 <pre class="code-panel"><%= inspect(field(@status, "doctor"), pretty: true, limit: :infinity) %></pre>
               </section>
 
               <section :if={present?(field(@status, "workpad"))}>
-                <h3 class="section-subtitle">Workpad 工作面板</h3>
+                <h3 class="section-subtitle"><%= tr(@lang, "Workpad", "Workpad 工作面板") %></h3>
                 <pre class="code-panel"><%= inspect(field(@status, "workpad"), pretty: true, limit: :infinity) %></pre>
               </section>
 
               <section :if={present?(field(@status, "logs"))}>
-                <h3 class="section-subtitle">日志</h3>
+                <h3 class="section-subtitle"><%= tr(@lang, "Logs", "日志") %></h3>
                 <pre class="code-panel"><%= inspect(field(@status, "logs"), pretty: true, limit: :infinity) %></pre>
               </section>
             </div>
@@ -424,13 +436,13 @@ defmodule SymphonyElixirWeb.ConsoleLive do
           assign(socket, :meta, meta) |> assign(:events_limit, events_limit) |> assign(:error_message, nil)
 
         {:error, reason} ->
-          assign(socket, :error_message, error_message(reason))
+          assign(socket, :error_message, error_message(socket.assigns.lang, reason))
       end
 
     socket =
       case client_module().list_runs(12) do
         {:ok, runs} -> assign(socket, :runs, runs)
-        {:error, reason} -> assign(socket, :error_message, error_message(reason))
+        {:error, reason} -> assign(socket, :error_message, error_message(socket.assigns.lang, reason))
       end
 
     if opts[:load_status?] && socket.assigns.selected_issue do
@@ -458,12 +470,12 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       {:error, reason} ->
         socket
         |> assign(:status, nil)
-        |> assign(:error_message, error_message(reason))
+        |> assign(:error_message, error_message(socket.assigns.lang, reason))
     end
   end
 
-  defp perform_action(%{assigns: %{selected_issue: nil}} = socket, _params) do
-    put_flash(socket, :error, "触发控制动作前，必须先加载一个议题")
+  defp perform_action(%{assigns: %{selected_issue: nil, lang: lang}} = socket, _params) do
+    put_flash(socket, :error, tr(lang, "Load an issue before triggering actions", "触发控制动作前，必须先加载一个议题"))
   end
 
   defp perform_action(socket, params) do
@@ -482,11 +494,11 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       {:ok, response} ->
         socket
         |> assign(:status, field(response, "status") || socket.assigns.status)
-        |> put_flash(:info, action_success_message(params["action"]))
+        |> put_flash(:info, action_success_message(socket.assigns.lang, params["action"]))
         |> refresh_console(load_status?: true)
 
       {:error, reason} ->
-        put_flash(socket, :error, error_message(reason))
+        put_flash(socket, :error, error_message(socket.assigns.lang, reason))
     end
   end
 
@@ -494,8 +506,8 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     Application.get_env(:symphony_elixir, :console_client_module, SymphonyElixir.ConsoleClient)
   end
 
-  defp adapter_label(nil), do: "项目"
-  defp adapter_label(meta), do: field(meta, "repo_name") || field(meta, "repo_key") || "项目"
+  defp adapter_label(nil), do: "Project"
+  defp adapter_label(meta), do: field(meta, "repo_name") || field(meta, "repo_key") || "Project"
 
   defp refresh_selected?(value, refresh_interval_ms) do
     selected =
@@ -508,10 +520,10 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     value == selected
   end
 
-  defp action_success_message("pause"), do: "已记录暂停请求"
-  defp action_success_message("resume"), do: "已记录继续请求"
-  defp action_success_message("instruction"), do: "已追加指令"
-  defp action_success_message(_action), do: "已记录动作"
+  defp action_success_message(lang, "pause"), do: tr(lang, "Pause recorded", "已记录暂停请求")
+  defp action_success_message(lang, "resume"), do: tr(lang, "Continue recorded", "已记录继续请求")
+  defp action_success_message(lang, "instruction"), do: tr(lang, "Instruction appended", "已追加指令")
+  defp action_success_message(lang, _action), do: tr(lang, "Action recorded", "已记录动作")
 
   defp normalized_checks(nil), do: []
   defp normalized_checks(checks) when is_map(checks), do: Enum.sort_by(checks, fn {key, _value} -> to_string(key) end)
@@ -527,13 +539,18 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp field(_map, _key), do: nil
 
-  defp error_message(:not_configured),
-    do: "使用控制台前，请先配置 SYMPHONY_CONSOLE_ADAPTER_BASE_URL 和 SYMPHONY_CONSOLE_ADAPTER_TOKEN。"
+  defp error_message(lang, :not_configured),
+    do:
+      tr(
+        lang,
+        "Set SYMPHONY_CONSOLE_ADAPTER_BASE_URL and SYMPHONY_CONSOLE_ADAPTER_TOKEN before using the bridge console.",
+        "使用控制台前，请先配置 SYMPHONY_CONSOLE_ADAPTER_BASE_URL 和 SYMPHONY_CONSOLE_ADAPTER_TOKEN。"
+      )
 
-  defp error_message({:http_error, status, body}),
-    do: "Bridge 请求失败，HTTP #{status}: #{inspect(body)}"
+  defp error_message(lang, {:http_error, status, body}),
+    do: tr(lang, "Bridge request failed with HTTP #{status}: #{inspect(body)}", "Bridge 请求失败，HTTP #{status}: #{inspect(body)}")
 
-  defp error_message(reason), do: "Bridge 请求失败: #{inspect(reason)}"
+  defp error_message(lang, reason), do: tr(lang, "Bridge request failed: #{inspect(reason)}", "Bridge 请求失败: #{inspect(reason)}")
 
   defp state_badge_class(value) when value in [nil, ""], do: "state-badge"
 
@@ -565,4 +582,30 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp schedule_refresh(0), do: :ok
   defp schedule_refresh(interval_ms), do: Process.send_after(self(), :refresh_tick, interval_ms)
+
+  defp normalize_lang("en"), do: "en"
+  defp normalize_lang("zh"), do: "zh"
+  defp normalize_lang(_lang), do: @default_lang
+
+  defp console_path("en"), do: "/console?lang=en"
+  defp console_path(_lang), do: "/console?lang=zh"
+
+  defp refresh_options("en"), do: [{"Off", "off"}, {"15s", "15000"}, {"30s", "30000"}, {"60s", "60000"}]
+  defp refresh_options(_lang), do: [{"关闭", "off"}, {"15s", "15000"}, {"30s", "30000"}, {"60s", "60000"}]
+
+  defp log_options("en"), do: [{"No logs", "none"}, {"Agent logs", "agent"}, {"Raw logs", "raw"}, {"All logs", "all"}]
+  defp log_options(_lang), do: [{"不包含日志", "none"}, {"执行日志", "agent"}, {"原始日志", "raw"}, {"全部日志", "all"}]
+
+  defp refresh_badge_label("en", refresh_interval_ms) when refresh_interval_ms > 0, do: "Auto #{div(refresh_interval_ms, 1000)}s"
+  defp refresh_badge_label("en", _refresh_interval_ms), do: "Manual refresh"
+  defp refresh_badge_label(_lang, refresh_interval_ms) when refresh_interval_ms > 0, do: "自动 #{div(refresh_interval_ms, 1000)}s"
+  defp refresh_badge_label(_lang, _refresh_interval_ms), do: "手动刷新"
+
+  defp locale_button_class(active_lang, button_lang) when active_lang == button_lang,
+    do: "subtle-button subtle-button-primary"
+
+  defp locale_button_class(_active_lang, _button_lang), do: "subtle-button"
+
+  defp tr("en", en, _zh), do: en
+  defp tr(_lang, _en, zh), do: zh
 end

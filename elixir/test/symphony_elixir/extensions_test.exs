@@ -727,6 +727,24 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert pause_html =~ "已记录暂停请求"
   end
 
+  test "bridge console supports english locale toggle" do
+    Application.put_env(:symphony_elixir, :console_client_module, FakeConsoleClient)
+    start_test_endpoint([])
+
+    {:ok, view, html} = live(build_conn(), "/console?lang=en")
+    assert html =~ "Bridge Console"
+    assert html =~ "Auto 15s"
+    assert html =~ "Load issue"
+
+    zh_html =
+      view
+      |> element("#lang-zh")
+      |> render_click()
+
+    assert zh_html =~ "工作流控制台"
+    assert zh_html =~ "加载议题"
+  end
+
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do
     spec = HttpServer.child_spec(port: 0)
     assert spec.id == HttpServer

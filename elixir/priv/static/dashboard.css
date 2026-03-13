@@ -190,6 +190,7 @@ pre,
   justify-items: end;
   align-content: start;
   min-width: min(100%, 9rem);
+  gap: 0.55rem;
 }
 
 .status-badge {
@@ -461,6 +462,13 @@ pre,
   background: var(--accent);
   border-color: var(--accent);
   color: #fff;
+}
+
+.locale-switch {
+  display: inline-flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .console-grid {
