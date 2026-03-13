@@ -1262,17 +1262,33 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     instruction_html =
       view
-      |> form("#instruction-form", %{
+      |> element("#instruction-form")
+      |> render_submit(%{
         "message" => "Check runtime saturation first",
-        "sync_linear" => "true"
+        "sync_linear" => "true",
+        "intent" => "append"
       })
-      |> render_submit()
 
     assert instruction_html =~ "Instruction appended"
 
     assert_receive {:profile_console_action, payload}
     assert (payload["profile"] || payload[:profile]) == "ops-triage"
     assert (payload["action"] || payload[:action]) == "instruction"
+
+    steer_html =
+      view
+      |> element("#instruction-form")
+      |> render_submit(%{
+        "message" => "Switch to a tighter recovery path and restart with the new direction",
+        "sync_linear" => "true",
+        "intent" => "steer"
+      })
+
+    assert steer_html =~ "Run steer scheduled"
+
+    assert_receive {:profile_console_action, steer_payload}
+    assert (steer_payload["profile"] || steer_payload[:profile]) == "ops-triage"
+    assert (steer_payload["action"] || steer_payload[:action]) == "steer"
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do

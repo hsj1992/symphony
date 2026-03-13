@@ -200,6 +200,11 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   @impl true
   def handle_event("append_instruction", %{"message" => message, "sync_linear" => sync_linear}, socket) do
+    handle_event("instruction_action", %{"message" => message, "sync_linear" => sync_linear, "intent" => "append"}, socket)
+  end
+
+  @impl true
+  def handle_event("instruction_action", %{"message" => message, "sync_linear" => sync_linear} = params, socket) do
     socket =
       socket
       |> assign(:instruction_message, message || "")
@@ -208,10 +213,16 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     if String.trim(socket.assigns.instruction_message) == "" do
       {:noreply, put_flash(socket, :error, tr(socket.assigns.lang, "Instruction cannot be empty", "补充指令不能为空"))}
     else
+      intent =
+        case params["intent"] do
+          "steer" -> "steer"
+          _ -> "instruction"
+        end
+
       {:noreply,
        socket
        |> perform_action(%{
-         "action" => "instruction",
+         "action" => intent,
          "message" => socket.assigns.instruction_message,
          "sync_linear" => socket.assigns.sync_linear
        })
@@ -507,7 +518,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                   <button id="restart-run" type="button" class="subtle-button" phx-click="restart"><%= tr(@lang, "Restart run", "重启运行") %></button>
                 </div>
 
-                <form id="instruction-form" class="instruction-form" phx-submit="append_instruction">
+                <form id="instruction-form" class="instruction-form" phx-submit="instruction_action">
                   <label class="toolbar-field toolbar-field-full">
                     <span><%= tr(@lang, "Append instruction", "补充指令") %></span>
                     <textarea
@@ -522,7 +533,10 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                     <span><%= tr(@lang, "Sync to Linear", "同步到 Linear") %></span>
                   </label>
 
-                  <button type="submit" class="subtle-button subtle-button-primary"><%= tr(@lang, "Append instruction", "追加指令") %></button>
+                  <div class="action-row">
+                    <button type="submit" name="intent" value="append" class="subtle-button subtle-button-primary"><%= tr(@lang, "Append instruction", "追加指令") %></button>
+                    <button id="steer-run" type="submit" name="intent" value="steer" class="subtle-button"><%= tr(@lang, "Steer run", "引导运行") %></button>
+                  </div>
                 </form>
               </section>
 
@@ -929,6 +943,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp action_success_message(lang, "release"), do: tr(lang, "Issue hold released", "已解除挂起")
   defp action_success_message(lang, "restart"), do: tr(lang, "Restart scheduled", "已安排重启")
   defp action_success_message(lang, "instruction"), do: tr(lang, "Instruction appended", "已追加指令")
+  defp action_success_message(lang, "steer"), do: tr(lang, "Run steer scheduled", "已安排引导运行")
   defp action_success_message(lang, _action), do: tr(lang, "Action recorded", "已记录动作")
 
   defp normalized_checks(nil), do: []
