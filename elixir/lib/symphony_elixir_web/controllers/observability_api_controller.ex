@@ -62,8 +62,8 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
 
   @spec issue_control(Conn.t(), map()) :: Conn.t()
   def issue_control(conn, %{"issue_identifier" => issue_identifier, "action" => action} = params) do
-    if action not in ["restart", "hold", "release"] do
-      error_response(conn, 400, "invalid_action", "Issue action must be restart, hold, or release")
+    if action not in ["cancel", "restart", "hold", "release"] do
+      error_response(conn, 400, "invalid_action", "Issue action must be cancel, restart, hold, or release")
     else
       reason =
         case Map.get(params, "reason") do

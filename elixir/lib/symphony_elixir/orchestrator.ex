@@ -1308,6 +1308,16 @@ defmodule SymphonyElixir.Orchestrator do
     normalized_reason = normalize_control_reason(reason)
 
     case normalize_issue_control_action(action) do
+      :cancel ->
+        case cancel_issue_run(state, issue_identifier, normalized_reason) do
+          {:ok, next_state, payload} ->
+            notify_dashboard()
+            {:reply, Map.put(payload, :requested_at, requested_at), next_state}
+
+          {:error, :issue_not_found} ->
+            {:reply, {:error, :issue_not_found}, state}
+        end
+
       :hold ->
         case hold_issue(state, issue_identifier, normalized_reason, requested_at) do
           {:ok, next_state, payload} ->
@@ -1831,6 +1841,7 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_control_action("pause"), do: :pause
   defp normalize_control_action("resume"), do: :resume
 
+  defp normalize_issue_control_action("cancel"), do: :cancel
   defp normalize_issue_control_action("hold"), do: :hold
   defp normalize_issue_control_action("release"), do: :release
   defp normalize_issue_control_action("restart"), do: :restart
@@ -1921,6 +1932,59 @@ defmodule SymphonyElixir.Orchestrator do
            scope: "idle",
            changed: true,
            operations: ["hold_issue"],
+           reason: reason
+         }}
+
+      {:error, :issue_not_found} ->
+        {:error, :issue_not_found}
+    end
+  end
+
+  defp cancel_issue_run(%State{} = state, issue_identifier, reason)
+       when is_binary(issue_identifier) do
+    identifier = String.trim(issue_identifier)
+
+    case resolve_issue_control_target(state, identifier) do
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "running"} ->
+        next_state = terminate_running_issue(state, issue_id, false)
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "cancel",
+           status: "cancelled",
+           scope: "running",
+           changed: true,
+           operations: ["terminate_running_agent", "cancel_current_run"],
+           reason: reason
+         }}
+
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "retrying"} ->
+        next_state = release_issue_claim_and_retry(state, issue_id)
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "cancel",
+           status: "cancelled",
+           scope: "retrying",
+           changed: true,
+           operations: ["cancel_retry", "cancel_current_run"],
+           reason: reason
+         }}
+
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, scope} ->
+        {:ok, state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "cancel",
+           status: "idle",
+           scope: scope,
+           changed: false,
+           operations: [],
            reason: reason
          }}
 

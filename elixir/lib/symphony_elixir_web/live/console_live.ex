@@ -179,6 +179,11 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   end
 
   @impl true
+  def handle_event("cancel", _params, socket) do
+    {:noreply, perform_action(socket, %{"action" => "cancel"})}
+  end
+
+  @impl true
   def handle_event("restart", _params, socket) do
     {:noreply, perform_action(socket, %{"action" => "restart"})}
   end
@@ -496,6 +501,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 <div class="action-row">
                   <button id="pause-run" type="button" class="subtle-button" phx-click="pause"><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
                   <button id="resume-run" type="button" class="subtle-button" phx-click="resume"><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
+                  <button id="cancel-run" type="button" class="subtle-button" phx-click="cancel"><%= tr(@lang, "Cancel current run", "取消当前运行") %></button>
                   <button id="hold-run" type="button" class="subtle-button" phx-click="hold"><%= tr(@lang, "Hold issue", "挂起议题") %></button>
                   <button id="release-run" type="button" class="subtle-button" phx-click="release"><%= tr(@lang, "Release hold", "解除挂起") %></button>
                   <button id="restart-run" type="button" class="subtle-button" phx-click="restart"><%= tr(@lang, "Restart run", "重启运行") %></button>
@@ -918,6 +924,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp action_success_message(lang, "pause"), do: tr(lang, "Pause recorded", "已记录暂停请求")
   defp action_success_message(lang, "resume"), do: tr(lang, "Continue recorded", "已记录继续请求")
+  defp action_success_message(lang, "cancel"), do: tr(lang, "Current run cancelled", "已取消当前运行")
   defp action_success_message(lang, "hold"), do: tr(lang, "Issue hold applied", "已挂起议题")
   defp action_success_message(lang, "release"), do: tr(lang, "Issue hold released", "已解除挂起")
   defp action_success_message(lang, "restart"), do: tr(lang, "Restart scheduled", "已安排重启")

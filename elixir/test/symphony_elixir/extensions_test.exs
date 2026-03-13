@@ -927,7 +927,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              %{
                "error" => %{
                  "code" => "invalid_action",
-                 "message" => "Issue action must be restart, hold, or release"
+                 "message" => "Issue action must be cancel, restart, hold, or release"
                }
              }
 
@@ -1118,6 +1118,13 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> render_click()
 
     assert pause_html =~ "已记录暂停请求"
+
+    cancel_html =
+      view
+      |> element("#cancel-run")
+      |> render_click()
+
+    assert cancel_html =~ "已取消当前运行"
 
     restart_html =
       view

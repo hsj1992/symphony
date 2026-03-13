@@ -239,6 +239,72 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     refute Orchestrator.should_dispatch_issue_for_test(issue, state)
   end
 
+  test "issue-level cancel control terminates a running worker without creating a hold" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil, poll_interval_ms: 50)
+
+    issue_id = "issue-cancel-running"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-CANCEL",
+      title: "Cancel running issue",
+      description: "Cancel the running worker",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-CANCEL"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :IssueCancelRunningOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    worker = spawn(fn -> Process.sleep(:infinity) end)
+    ref = Process.monitor(worker)
+
+    running_entry = %{
+      pid: worker,
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-cancel",
+      turn_count: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      worker_host: nil,
+      workspace_path: nil,
+      retry_attempt: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    assert %{
+             "issue_identifier" => "MT-CANCEL",
+             "status" => "cancelled",
+             "scope" => "running",
+             "operations" => ["terminate_running_agent", "cancel_current_run"]
+           } =
+             Orchestrator.control_issue(orchestrator_name, "MT-CANCEL", "cancel", "manual cancel")
+             |> stringify_keys()
+
+    assert_receive {:DOWN, ^ref, :process, ^worker, _reason}, 1_000
+
+    state = :sys.get_state(pid)
+    assert state.running == %{}
+    refute Map.has_key?(state.held_issues, issue_id)
+    assert Orchestrator.should_dispatch_issue_for_test(issue, state)
+  end
+
   test "issue-level release control removes a hold and allows dispatch eligibility" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil, poll_interval_ms: 50)
 
