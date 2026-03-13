@@ -48,6 +48,130 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert %{control: %{paused: false, pause_reason: nil}} = resumed_snapshot
   end
 
+  test "issue-level restart control terminates a running worker and schedules immediate retry" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil, poll_interval_ms: 50)
+
+    issue_id = "issue-restart-running"
+
+    issue = %Issue{
+      id: issue_id,
+      identifier: "MT-RESTART",
+      title: "Restart running issue",
+      description: "Restart the running worker",
+      state: "In Progress",
+      url: "https://example.org/issues/MT-RESTART"
+    }
+
+    orchestrator_name = Module.concat(__MODULE__, :IssueRestartRunningOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    worker = spawn(fn -> Process.sleep(:infinity) end)
+    ref = Process.monitor(worker)
+
+    running_entry = %{
+      pid: worker,
+      ref: ref,
+      identifier: issue.identifier,
+      issue: issue,
+      session_id: "thread-restart",
+      turn_count: 1,
+      last_codex_message: nil,
+      last_codex_timestamp: nil,
+      last_codex_event: nil,
+      worker_host: nil,
+      workspace_path: nil,
+      retry_attempt: nil,
+      started_at: DateTime.utc_now()
+    }
+
+    :sys.replace_state(pid, fn _ ->
+      initial_state
+      |> Map.put(:running, %{issue_id => running_entry})
+      |> Map.put(:claimed, MapSet.put(initial_state.claimed, issue_id))
+    end)
+
+    assert %{
+             "issue_identifier" => "MT-RESTART",
+             "status" => "scheduled",
+             "scope" => "running",
+             "operations" => ["terminate_running_agent", "schedule_immediate_retry"]
+           } =
+             Orchestrator.control_issue(orchestrator_name, "MT-RESTART", "restart", "manual restart")
+             |> stringify_keys()
+
+    assert_receive {:DOWN, ^ref, :process, ^worker, _reason}, 1_000
+
+    state = :sys.get_state(pid)
+    assert state.running == %{}
+
+    assert %{attempt: 1, identifier: "MT-RESTART", error: "manual restart requested: manual restart"} =
+             state.retry_attempts[issue_id]
+
+    assert state.retry_attempts[issue_id].due_at_ms <= System.monotonic_time(:millisecond) + 100
+  end
+
+  test "issue-level restart control reschedules an existing retry immediately" do
+    write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil, poll_interval_ms: 50)
+
+    issue_id = "issue-restart-retry"
+    orchestrator_name = Module.concat(__MODULE__, :IssueRestartRetryOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    initial_state = :sys.get_state(pid)
+    old_timer = Process.send_after(self(), :stale_retry_marker, 60_000)
+    current_due_at = System.monotonic_time(:millisecond) + 60_000
+
+    :sys.replace_state(pid, fn _ ->
+      %{
+        initial_state
+        | retry_attempts: %{
+            issue_id => %{
+              attempt: 2,
+              timer_ref: old_timer,
+              retry_token: make_ref(),
+              due_at_ms: current_due_at,
+              identifier: "MT-RETRY",
+              error: "previous retry failure",
+              worker_host: nil,
+              workspace_path: nil
+            }
+          }
+      }
+    end)
+
+    assert %{
+             "issue_identifier" => "MT-RETRY",
+             "status" => "scheduled",
+             "scope" => "retrying",
+             "operations" => ["reschedule_retry_now"]
+           } =
+             Orchestrator.control_issue(orchestrator_name, "MT-RETRY", "restart", nil)
+             |> stringify_keys()
+
+    state = :sys.get_state(pid)
+    retry_entry = state.retry_attempts[issue_id]
+
+    assert retry_entry.identifier == "MT-RETRY"
+    assert retry_entry.attempt >= 2
+    assert retry_entry.due_at_ms < current_due_at
+
+    assert retry_entry.error == "manual restart requested" or
+             String.starts_with?(retry_entry.error, "retry poll failed:")
+  end
+
   test "orchestrator snapshot reflects last codex update and session id" do
     issue_id = "issue-snapshot"
 

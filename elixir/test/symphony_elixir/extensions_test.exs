@@ -89,6 +89,22 @@ defmodule SymphonyElixir.ExtensionsTest do
 
       {:reply, payload, state}
     end
+
+    def handle_call({:issue_control, issue_identifier, action, reason}, _from, state) do
+      payload =
+        Keyword.get(state, :issue_control, %{
+          issue_identifier: issue_identifier,
+          action: action,
+          status: "scheduled",
+          scope: "running",
+          changed: true,
+          operations: ["terminate_running_agent", "schedule_immediate_retry"],
+          reason: reason,
+          requested_at: DateTime.utc_now()
+        })
+
+      {:reply, payload, state}
+    end
   end
 
   defmodule FakeConsoleClient do
@@ -833,6 +849,20 @@ defmodule SymphonyElixir.ExtensionsTest do
              "operations" => ["pause_intake", "pause_retries"],
              "pause_reason" => "manual hold"
            } = json_response(conn, 202)
+
+    conn =
+      post(build_conn(), "/api/v1/control/MT-HTTP", %{
+        "action" => "restart",
+        "reason" => "manual restart"
+      })
+
+    assert %{
+             "action" => "restart",
+             "issue_identifier" => "MT-HTTP",
+             "status" => "scheduled",
+             "operations" => ["terminate_running_agent", "schedule_immediate_retry"],
+             "reason" => "manual restart"
+           } = json_response(conn, 202)
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -880,6 +910,17 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert json_response(post(build_conn(), "/api/v1/control", %{"action" => "stop"}), 400) ==
              %{"error" => %{"code" => "invalid_action", "message" => "Action must be pause or resume"}}
+
+    assert json_response(post(build_conn(), "/api/v1/control/MT-1", %{"action" => "pause"}), 400) ==
+             %{"error" => %{"code" => "invalid_action", "message" => "Issue action must be restart"}}
+
+    assert json_response(post(build_conn(), "/api/v1/control/MT-1", %{"action" => "restart"}), 503) ==
+             %{
+               "error" => %{
+                 "code" => "orchestrator_unavailable",
+                 "message" => "Orchestrator is unavailable"
+               }
+             }
   end
 
   test "phoenix observability api preserves snapshot timeout behavior" do
@@ -1060,6 +1101,13 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> render_click()
 
     assert pause_html =~ "已记录暂停请求"
+
+    restart_html =
+      view
+      |> element("#restart-run")
+      |> render_click()
+
+    assert restart_html =~ "已安排重启"
 
     logs_html =
       view

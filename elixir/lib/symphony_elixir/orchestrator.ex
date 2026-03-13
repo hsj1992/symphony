@@ -943,14 +943,18 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    if metadata[:delay_type] == :paused do
-      5_000
-    else
-      if metadata[:delay_type] == :continuation and attempt == 1 do
+    cond do
+      metadata[:delay_type] == :manual ->
+        0
+
+      metadata[:delay_type] == :paused ->
+        5_000
+
+      metadata[:delay_type] == :continuation and attempt == 1 ->
         @continuation_retry_delay_ms
-      else
+
+      true ->
         failure_retry_delay(attempt)
-      end
     end
   end
 
@@ -1132,6 +1136,22 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec control_issue(String.t(), String.t(), String.t() | nil) ::
+          map() | {:error, :issue_not_found} | :unavailable
+  def control_issue(issue_identifier, action, reason \\ nil) do
+    control_issue(__MODULE__, issue_identifier, action, reason)
+  end
+
+  @spec control_issue(GenServer.server(), String.t(), String.t(), String.t() | nil) ::
+          map() | {:error, :issue_not_found} | :unavailable
+  def control_issue(server, issue_identifier, action, reason) do
+    if Process.whereis(server) do
+      GenServer.call(server, {:issue_control, issue_identifier, action, reason})
+    else
+      :unavailable
+    end
+  end
+
   @impl true
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
@@ -1228,6 +1248,23 @@ defmodule SymphonyElixir.Orchestrator do
         notify_dashboard()
 
         {:reply, runtime_control_payload(next_state, requested_at, changed, ["resume_intake", "resume_retries", "poll"]), next_state}
+    end
+  end
+
+  def handle_call({:issue_control, issue_identifier, action, reason}, _from, state) do
+    requested_at = DateTime.utc_now()
+    normalized_reason = normalize_control_reason(reason)
+
+    case normalize_issue_control_action(action) do
+      :restart ->
+        case restart_issue_now(state, issue_identifier, normalized_reason) do
+          {:ok, next_state, payload} ->
+            notify_dashboard()
+            {:reply, Map.put(payload, :requested_at, requested_at), next_state}
+
+          {:error, :issue_not_found} ->
+            {:reply, {:error, :issue_not_found}, state}
+        end
     end
   end
 
@@ -1722,6 +1759,8 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_control_action("pause"), do: :pause
   defp normalize_control_action("resume"), do: :resume
 
+  defp normalize_issue_control_action("restart"), do: :restart
+
   defp normalize_control_reason(reason) when is_binary(reason) do
     case String.trim(reason) do
       "" -> nil
@@ -1741,6 +1780,91 @@ defmodule SymphonyElixir.Orchestrator do
       paused_at: control_iso8601(state.paused_at)
     }
   end
+
+  defp restart_issue_now(%State{} = state, issue_identifier, reason)
+       when is_binary(issue_identifier) do
+    identifier = String.trim(issue_identifier)
+
+    cond do
+      running_entry = find_running_entry_by_identifier(state.running, identifier) ->
+        issue_id = running_entry.issue.id
+        next_attempt = next_retry_attempt_from_running(running_entry) || 1
+
+        next_state =
+          state
+          |> terminate_running_issue(issue_id, false)
+          |> schedule_issue_retry(issue_id, next_attempt, %{
+            identifier: running_entry.identifier,
+            error: restart_error(reason),
+            worker_host: Map.get(running_entry, :worker_host),
+            workspace_path: Map.get(running_entry, :workspace_path),
+            delay_type: :manual
+          })
+
+        {:ok, next_state,
+         %{
+           issue_identifier: running_entry.identifier,
+           issue_id: issue_id,
+           action: "restart",
+           status: "scheduled",
+           scope: "running",
+           changed: true,
+           operations: ["terminate_running_agent", "schedule_immediate_retry"],
+           reason: reason
+         }}
+
+      retry_entry = find_retry_entry_by_identifier(state.retry_attempts, identifier) ->
+        issue_id = retry_entry.issue_id
+
+        next_state =
+          schedule_issue_retry(state, issue_id, retry_entry.attempt, %{
+            identifier: retry_entry.identifier,
+            error: restart_error(reason),
+            worker_host: Map.get(retry_entry, :worker_host),
+            workspace_path: Map.get(retry_entry, :workspace_path),
+            delay_type: :manual
+          })
+
+        {:ok, next_state,
+         %{
+           issue_identifier: retry_entry.identifier,
+           issue_id: issue_id,
+           action: "restart",
+           status: "scheduled",
+           scope: "retrying",
+           changed: true,
+           operations: ["reschedule_retry_now"],
+           reason: reason
+         }}
+
+      true ->
+        {:error, :issue_not_found}
+    end
+  end
+
+  defp restart_error(nil), do: "manual restart requested"
+  defp restart_error(reason), do: "manual restart requested: #{reason}"
+
+  defp find_running_entry_by_identifier(running, identifier) when is_map(running) do
+    Enum.find_value(running, fn
+      {_issue_id, %{identifier: ^identifier} = running_entry} -> running_entry
+      _ -> nil
+    end)
+  end
+
+  defp find_running_entry_by_identifier(_running, _identifier), do: nil
+
+  defp find_retry_entry_by_identifier(retry_attempts, identifier) when is_map(retry_attempts) do
+    Enum.find_value(retry_attempts, fn
+      {issue_id, %{identifier: ^identifier} = retry_entry} ->
+        Map.put(retry_entry, :issue_id, issue_id)
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp find_retry_entry_by_identifier(_retry_attempts, _identifier), do: nil
 
   defp cancel_tick(%State{tick_timer_ref: nil} = state), do: state
 

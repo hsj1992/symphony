@@ -75,6 +75,24 @@ defmodule SymphonyElixirWeb.Presenter do
     end
   end
 
+  @spec issue_control_payload(GenServer.name(), String.t(), String.t(), String.t() | nil) ::
+          {:ok, map()} | {:error, :unavailable | :issue_not_found}
+  def issue_control_payload(orchestrator, issue_identifier, action, reason) do
+    case Orchestrator.control_issue(orchestrator, issue_identifier, action, reason) do
+      :unavailable ->
+        {:error, :unavailable}
+
+      {:error, :issue_not_found} ->
+        {:error, :issue_not_found}
+
+      payload ->
+        {:ok,
+         payload
+         |> Map.update!(:requested_at, &DateTime.to_iso8601/1)
+         |> Map.put(:action, action)}
+    end
+  end
+
   defp issue_payload_body(issue_identifier, running, retry) do
     %{
       issue_identifier: issue_identifier,

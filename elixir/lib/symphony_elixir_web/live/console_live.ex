@@ -179,6 +179,11 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   end
 
   @impl true
+  def handle_event("restart", _params, socket) do
+    {:noreply, perform_action(socket, %{"action" => "restart"})}
+  end
+
+  @impl true
   def handle_event("append_instruction", %{"message" => message, "sync_linear" => sync_linear}, socket) do
     socket =
       socket
@@ -475,6 +480,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 <div class="action-row">
                   <button id="pause-run" type="button" class="subtle-button" phx-click="pause"><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
                   <button id="resume-run" type="button" class="subtle-button" phx-click="resume"><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
+                  <button id="restart-run" type="button" class="subtle-button" phx-click="restart"><%= tr(@lang, "Restart run", "重启运行") %></button>
                 </div>
 
                 <form id="instruction-form" class="instruction-form" phx-submit="append_instruction">
@@ -858,6 +864,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp action_success_message(lang, "pause"), do: tr(lang, "Pause recorded", "已记录暂停请求")
   defp action_success_message(lang, "resume"), do: tr(lang, "Continue recorded", "已记录继续请求")
+  defp action_success_message(lang, "restart"), do: tr(lang, "Restart scheduled", "已安排重启")
   defp action_success_message(lang, "instruction"), do: tr(lang, "Instruction appended", "已追加指令")
   defp action_success_message(lang, _action), do: tr(lang, "Action recorded", "已记录动作")
 
