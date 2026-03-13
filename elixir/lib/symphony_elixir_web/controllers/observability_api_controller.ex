@@ -37,6 +37,29 @@ defmodule SymphonyElixirWeb.ObservabilityApiController do
     end
   end
 
+  @spec control(Conn.t(), map()) :: Conn.t()
+  def control(conn, %{"action" => action} = params) do
+    if action not in ["pause", "resume"] do
+      error_response(conn, 400, "invalid_action", "Action must be pause or resume")
+    else
+      reason =
+        case Map.get(params, "reason") do
+          value when is_binary(value) -> value
+          _ -> nil
+        end
+
+      case Presenter.control_payload(orchestrator(), action, reason) do
+        {:ok, payload} ->
+          conn
+          |> put_status(202)
+          |> json(payload)
+
+        {:error, :unavailable} ->
+          error_response(conn, 503, "orchestrator_unavailable", "Orchestrator is unavailable")
+      end
+    end
+  end
+
   @spec method_not_allowed(Conn.t(), map()) :: Conn.t()
   def method_not_allowed(conn, _params) do
     error_response(conn, 405, "method_not_allowed", "Method not allowed")

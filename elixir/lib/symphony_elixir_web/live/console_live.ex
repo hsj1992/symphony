@@ -31,6 +31,8 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       |> assign(:instruction_message, "")
       |> assign(:sync_linear, true)
       |> assign(:refresh_interval_ms, @default_refresh_ms)
+      |> assign(:detail_panel, "workpad")
+      |> assign(:active_log_stream, nil)
 
     socket = refresh_console(socket, load_status?: false)
 
@@ -66,6 +68,16 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   @impl true
   def handle_event("set_lang", %{"lang" => lang}, socket) do
     {:noreply, push_patch(socket, to: console_path(normalize_lang(lang)))}
+  end
+
+  @impl true
+  def handle_event("set_detail_panel", %{"panel" => panel}, socket) do
+    {:noreply, assign(socket, :detail_panel, normalize_detail_panel(panel))}
+  end
+
+  @impl true
+  def handle_event("set_log_stream", %{"stream" => stream}, socket) do
+    {:noreply, assign(socket, :active_log_stream, stream)}
   end
 
   @impl true
@@ -329,6 +341,12 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 <p class="metric-value"><%= field(@status, "next") || tr(@lang, "n/a", "未提供") %></p>
                 <p class="metric-detail"><%= tr(@lang, "Updated", "更新时间") %>：<span class="mono"><%= field(@status, "updated_at") || tr(@lang, "n/a", "未提供") %></span></p>
               </article>
+
+              <article class="metric-card">
+                <p class="metric-label"><%= tr(@lang, "Runtime", "运行时") %></p>
+                <p class="metric-value"><%= runtime_label(field(@status, "runtime_control"), @lang) %></p>
+                <p class="metric-detail"><%= runtime_reason(field(@status, "runtime_control"), @lang) %></p>
+              </article>
             </div>
 
             <div class="section-stack">
@@ -355,27 +373,21 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               </section>
 
               <section>
-                <h3 class="section-subtitle"><%= tr(@lang, "Latest events", "最新事件") %></h3>
+                <h3 class="section-subtitle"><%= tr(@lang, "Timeline", "事件时间线") %></h3>
                 <%= if normalized_events(field(@status, "latest_events")) == [] do %>
                   <p class="empty-state"><%= tr(@lang, "No events returned.", "当前没有返回事件。") %></p>
                 <% else %>
-                  <div class="table-wrap">
-                    <table class="data-table">
-                      <thead>
-                        <tr>
-                          <th><%= tr(@lang, "Time", "时间") %></th>
-                          <th><%= tr(@lang, "Type", "类型") %></th>
-                          <th><%= tr(@lang, "Summary", "摘要") %></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        <tr :for={event <- normalized_events(field(@status, "latest_events"))}>
-                          <td class="mono"><%= field(event, "ts") || tr(@lang, "n/a", "未提供") %></td>
-                          <td><%= field(event, "type") || tr(@lang, "n/a", "未提供") %></td>
-                          <td><%= field(event, "summary") || tr(@lang, "n/a", "未提供") %></td>
-                        </tr>
-                      </tbody>
-                    </table>
+                  <div class="timeline-list">
+                    <article :for={event <- normalized_events(field(@status, "latest_events"))} class="timeline-item">
+                      <div class="timeline-head">
+                        <span class={state_badge_class(field(event, "type"))}><%= humanize_token(field(event, "type"), @lang) || tr(@lang, "n/a", "未提供") %></span>
+                        <span class="timeline-time mono"><%= field(event, "ts") || tr(@lang, "n/a", "未提供") %></span>
+                      </div>
+                      <p class="timeline-summary"><%= field(event, "summary") || tr(@lang, "n/a", "未提供") %></p>
+                      <p :if={present?(field(event, "actor"))} class="timeline-meta">
+                        <%= tr(@lang, "Actor", "执行方") %>：<span class="mono"><%= field(event, "actor") %></span>
+                      </p>
+                    </article>
                   </div>
                 <% end %>
               </section>
@@ -383,8 +395,8 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               <section>
                 <h3 class="section-subtitle"><%= tr(@lang, "Actions", "控制动作") %></h3>
                 <div class="action-row">
-                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause"><%= tr(@lang, "Pause", "暂停") %></button>
-                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume"><%= tr(@lang, "Continue", "继续") %></button>
+                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause"><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
+                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume"><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
                 </div>
 
                 <form id="instruction-form" class="instruction-form" phx-submit="append_instruction">
@@ -406,19 +418,79 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 </form>
               </section>
 
-              <section :if={present?(field(@status, "doctor"))}>
-                <h3 class="section-subtitle"><%= tr(@lang, "Doctor", "Doctor 检查") %></h3>
-                <pre class="code-panel"><%= inspect(field(@status, "doctor"), pretty: true, limit: :infinity) %></pre>
-              </section>
+              <section>
+                <div class="section-header section-header-tight">
+                  <div>
+                    <h3 class="section-subtitle"><%= tr(@lang, "Inspector", "数据面板") %></h3>
+                    <p class="section-copy"><%= tr(@lang, "Switch between workpad context, doctor output, and split log streams.", "在 workpad、doctor 输出和拆分日志流之间切换。") %></p>
+                  </div>
+                </div>
 
-              <section :if={present?(field(@status, "workpad"))}>
-                <h3 class="section-subtitle"><%= tr(@lang, "Workpad", "Workpad 工作面板") %></h3>
-                <pre class="code-panel"><%= inspect(field(@status, "workpad"), pretty: true, limit: :infinity) %></pre>
-              </section>
+                <div class="panel-tab-row">
+                  <button type="button" class={panel_button_class(@detail_panel, "workpad")} phx-click="set_detail_panel" phx-value-panel="workpad"><%= tr(@lang, "Workpad", "Workpad") %></button>
+                  <button type="button" class={panel_button_class(@detail_panel, "doctor")} phx-click="set_detail_panel" phx-value-panel="doctor"><%= tr(@lang, "Doctor", "Doctor") %></button>
+                  <button type="button" class={panel_button_class(@detail_panel, "logs")} phx-click="set_detail_panel" phx-value-panel="logs"><%= tr(@lang, "Logs", "日志流") %></button>
+                </div>
 
-              <section :if={present?(field(@status, "logs"))}>
-                <h3 class="section-subtitle"><%= tr(@lang, "Logs", "日志") %></h3>
-                <pre class="code-panel"><%= inspect(field(@status, "logs"), pretty: true, limit: :infinity) %></pre>
+                <div :if={@detail_panel == "workpad"} class="inspector-stack">
+                  <%= if workpad_sections(field(@status, "workpad")) == [] do %>
+                    <p class="empty-state"><%= tr(@lang, "No workpad data returned.", "当前没有返回 workpad 数据。") %></p>
+                  <% else %>
+                    <article :for={section <- workpad_sections(field(@status, "workpad"))} class="inspector-card">
+                      <div class="inspector-card-head">
+                        <h4><%= workpad_section_label(section.id, @lang) %></h4>
+                      </div>
+                      <pre class="code-panel"><%= section.content %></pre>
+                    </article>
+                  <% end %>
+                </div>
+
+                <div :if={@detail_panel == "doctor"} class="inspector-stack">
+                  <%= if doctor_rows(field(@status, "doctor")) == [] do %>
+                    <p class="empty-state"><%= tr(@lang, "No doctor output returned.", "当前没有返回 doctor 输出。") %></p>
+                  <% else %>
+                    <article class="inspector-card">
+                      <div class="table-wrap">
+                        <table class="data-table">
+                          <thead>
+                            <tr>
+                              <th><%= tr(@lang, "Field", "字段") %></th>
+                              <th><%= tr(@lang, "Value", "值") %></th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr :for={{label, value} <- doctor_rows(field(@status, "doctor"))}>
+                              <td><%= label %></td>
+                              <td><%= value %></td>
+                            </tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </article>
+                  <% end %>
+                </div>
+
+                <div :if={@detail_panel == "logs"} class="inspector-stack">
+                  <%= if log_streams(field(@status, "logs")) == [] do %>
+                    <p class="empty-state"><%= tr(@lang, "No logs returned. Reload the issue with agent or raw logs enabled.", "当前没有返回日志。请重新加载议题并启用执行日志或原始日志。") %></p>
+                  <% else %>
+                    <div class="panel-tab-row">
+                      <button
+                        :for={stream <- log_streams(field(@status, "logs"))}
+                        type="button"
+                        class={panel_button_class(active_log_stream(@status, @active_log_stream), stream.id)}
+                        phx-click="set_log_stream"
+                        phx-value-stream={stream.id}
+                      ><%= stream.label %></button>
+                    </div>
+                    <article :if={selected_stream = selected_log_stream(field(@status, "logs"), @active_log_stream)} class="inspector-card">
+                      <div class="inspector-card-head">
+                        <h4><%= selected_stream.label %></h4>
+                      </div>
+                      <pre class="code-panel"><%= selected_stream.content %></pre>
+                    </article>
+                  <% end %>
+                </div>
               </section>
             </div>
           <% end %>
@@ -465,6 +537,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       {:ok, status} ->
         socket
         |> assign(:status, status)
+        |> assign(:active_log_stream, default_log_stream_id(field(status, "logs")))
         |> assign(:error_message, nil)
 
       {:error, reason} ->
@@ -533,6 +606,107 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp normalized_events(events) when is_list(events), do: events
   defp normalized_events(_events), do: []
 
+  defp workpad_sections(nil), do: []
+
+  defp workpad_sections(workpad) when is_map(workpad) do
+    ["current_status", "execution_timeline", "validation", "feedback_sweep"]
+    |> Enum.map(fn key -> %{id: key, content: blank_to_nil(field(workpad, key))} end)
+    |> Enum.reject(&is_nil(&1.content))
+  end
+
+  defp workpad_sections(_workpad), do: []
+
+  defp doctor_rows(nil), do: []
+
+  defp doctor_rows(doctor) when is_map(doctor) do
+    doctor
+    |> Enum.map(fn {key, value} -> {humanize_token(key, "en"), doctor_value(value)} end)
+    |> Enum.sort_by(fn {label, _value} -> label end)
+  end
+
+  defp doctor_rows(_doctor), do: []
+
+  defp doctor_value(value) when is_binary(value), do: value
+  defp doctor_value(value) when is_boolean(value), do: to_string(value)
+  defp doctor_value(value) when is_number(value), do: to_string(value)
+  defp doctor_value(value), do: inspect(value, pretty: true, limit: :infinity)
+
+  defp log_streams(nil), do: []
+
+  defp log_streams(logs) when is_map(logs) do
+    top_level =
+      case blank_to_nil(field(logs, "agent")) do
+        nil -> []
+        content -> [%{id: "agent", label: "Agent", content: content}]
+      end
+
+    raw_streams =
+      case field(logs, "raw") do
+        raw when is_map(raw) ->
+          raw
+          |> Enum.map(fn {key, value} -> %{id: "raw:" <> to_string(key), label: to_string(key), content: to_string(value)} end)
+          |> Enum.sort_by(& &1.label)
+
+        _ ->
+          []
+      end
+
+    top_level ++ raw_streams
+  end
+
+  defp log_streams(_logs), do: []
+
+  defp default_log_stream_id(logs) do
+    case log_streams(logs) do
+      [first | _rest] -> first.id
+      [] -> nil
+    end
+  end
+
+  defp active_log_stream(status, active_stream) do
+    active_stream || default_log_stream_id(field(status, "logs"))
+  end
+
+  defp selected_log_stream(logs, active_stream) do
+    stream_id = active_stream || default_log_stream_id(logs)
+    Enum.find(log_streams(logs), &(&1.id == stream_id))
+  end
+
+  defp runtime_label(nil, lang), do: tr(lang, "Unknown", "未知")
+
+  defp runtime_label(runtime_control, lang) when is_map(runtime_control) do
+    if field(runtime_control, "paused") in [true, "true"] do
+      tr(lang, "Paused", "已暂停")
+    else
+      tr(lang, "Running", "运行中")
+    end
+  end
+
+  defp runtime_label(_runtime_control, lang), do: tr(lang, "Unknown", "未知")
+
+  defp runtime_reason(nil, lang), do: tr(lang, "No runtime control state returned.", "当前没有返回运行时控制状态。")
+
+  defp runtime_reason(runtime_control, lang) when is_map(runtime_control) do
+    paused_at = blank_to_nil(field(runtime_control, "paused_at"))
+    pause_reason = blank_to_nil(field(runtime_control, "pause_reason"))
+
+    cond do
+      (field(runtime_control, "paused") in [true, "true"] and pause_reason) && paused_at ->
+        tr(lang, "Paused at #{paused_at}: #{pause_reason}", "于 #{paused_at} 暂停：#{pause_reason}")
+
+      field(runtime_control, "paused") in [true, "true"] and pause_reason ->
+        tr(lang, "Paused: #{pause_reason}", "已暂停：#{pause_reason}")
+
+      field(runtime_control, "paused") in [true, "true"] ->
+        tr(lang, "Dispatch is paused until resume is requested.", "新的 dispatch 已暂停，直到显式恢复。")
+
+      true ->
+        tr(lang, "Dispatch and retry intake are active.", "dispatch 和 retry intake 处于活跃状态。")
+    end
+  end
+
+  defp runtime_reason(_runtime_control, lang), do: tr(lang, "No runtime control state returned.", "当前没有返回运行时控制状态。")
+
   defp field(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, String.to_atom(key))
   end
@@ -600,6 +774,40 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp refresh_badge_label("en", _refresh_interval_ms), do: "Manual refresh"
   defp refresh_badge_label(_lang, refresh_interval_ms) when refresh_interval_ms > 0, do: "自动 #{div(refresh_interval_ms, 1000)}s"
   defp refresh_badge_label(_lang, _refresh_interval_ms), do: "手动刷新"
+
+  defp normalize_detail_panel("doctor"), do: "doctor"
+  defp normalize_detail_panel("logs"), do: "logs"
+  defp normalize_detail_panel(_panel), do: "workpad"
+
+  defp panel_button_class(active_panel, panel) when active_panel == panel,
+    do: "subtle-button subtle-button-primary"
+
+  defp panel_button_class(_active_panel, _panel), do: "subtle-button"
+
+  defp workpad_section_label("current_status", "en"), do: "Current status"
+  defp workpad_section_label("execution_timeline", "en"), do: "Execution timeline"
+  defp workpad_section_label("validation", "en"), do: "Validation"
+  defp workpad_section_label("feedback_sweep", "en"), do: "Feedback sweep"
+  defp workpad_section_label("current_status", _lang), do: "当前状态"
+  defp workpad_section_label("execution_timeline", _lang), do: "执行时间线"
+  defp workpad_section_label("validation", _lang), do: "验证"
+  defp workpad_section_label("feedback_sweep", _lang), do: "反馈清扫"
+  defp workpad_section_label(section, _lang), do: humanize_token(section, "en")
+
+  defp humanize_token(nil, _lang), do: nil
+
+  defp humanize_token(value, lang) do
+    value
+    |> to_string()
+    |> String.replace("_", " ")
+    |> then(fn token ->
+      if lang == "en" do
+        Phoenix.Naming.humanize(token)
+      else
+        Phoenix.Naming.humanize(token)
+      end
+    end)
+  end
 
   defp locale_button_class(active_lang, button_lang) when active_lang == button_lang,
     do: "subtle-button subtle-button-primary"

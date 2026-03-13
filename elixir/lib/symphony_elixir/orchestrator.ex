@@ -33,12 +33,15 @@ defmodule SymphonyElixir.Orchestrator do
       :poll_check_in_progress,
       :tick_timer_ref,
       :tick_token,
+      :paused_at,
+      :pause_reason,
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
       retry_attempts: %{},
       codex_totals: nil,
-      codex_rate_limits: nil
+      codex_rate_limits: nil,
+      paused: false
     ]
   end
 
@@ -224,11 +227,15 @@ defmodule SymphonyElixir.Orchestrator do
   defp maybe_dispatch(%State{} = state) do
     state = reconcile_running_issues(state)
 
-    with :ok <- Config.validate!(),
+    with false <- state.paused,
+         :ok <- Config.validate!(),
          {:ok, issues} <- Tracker.fetch_candidate_issues(),
          true <- available_slots(state) > 0 do
       choose_issues(issues, state)
     else
+      true ->
+        state
+
       {:error, :missing_linear_api_token} ->
         Logger.error("Linear API token missing in WORKFLOW.md")
         state
@@ -827,22 +834,32 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    case Tracker.fetch_candidate_issues() do
-      {:ok, issues} ->
-        issues
-        |> find_issue_by_id(issue_id)
-        |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
+    if state.paused do
+      {:noreply,
+       schedule_issue_retry(
+         state,
+         issue_id,
+         attempt,
+         Map.merge(metadata, %{error: "orchestrator paused", delay_type: :paused})
+       )}
+    else
+      case Tracker.fetch_candidate_issues() do
+        {:ok, issues} ->
+          issues
+          |> find_issue_by_id(issue_id)
+          |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
 
-      {:error, reason} ->
-        Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
+        {:error, reason} ->
+          Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
 
-        {:noreply,
-         schedule_issue_retry(
-           state,
-           issue_id,
-           attempt + 1,
-           Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
-         )}
+          {:noreply,
+           schedule_issue_retry(
+             state,
+             issue_id,
+             attempt + 1,
+             Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
+           )}
+      end
     end
   end
 
@@ -926,10 +943,14 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    if metadata[:delay_type] == :continuation and attempt == 1 do
-      @continuation_retry_delay_ms
+    if metadata[:delay_type] == :paused do
+      5_000
     else
-      failure_retry_delay(attempt)
+      if metadata[:delay_type] == :continuation and attempt == 1 do
+        @continuation_retry_delay_ms
+      else
+        failure_retry_delay(attempt)
+      end
     end
   end
 
@@ -1097,6 +1118,20 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec set_runtime_control(String.t(), String.t() | nil) :: map() | :unavailable
+  def set_runtime_control(action, reason \\ nil) do
+    set_runtime_control(__MODULE__, action, reason)
+  end
+
+  @spec set_runtime_control(GenServer.server(), String.t(), String.t() | nil) :: map() | :unavailable
+  def set_runtime_control(server, action, reason) do
+    if Process.whereis(server) do
+      GenServer.call(server, {:runtime_control, action, reason})
+    else
+      :unavailable
+    end
+  end
+
   @impl true
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
@@ -1146,12 +1181,54 @@ defmodule SymphonyElixir.Orchestrator do
        retrying: retrying,
        codex_totals: state.codex_totals,
        rate_limits: Map.get(state, :codex_rate_limits),
+       control: %{
+         paused: state.paused == true,
+         paused_at: control_iso8601(state.paused_at),
+         pause_reason: state.pause_reason
+       },
        polling: %{
          checking?: state.poll_check_in_progress == true,
          next_poll_in_ms: next_poll_in_ms(state.next_poll_due_at_ms, now_ms),
          poll_interval_ms: state.poll_interval_ms
        }
      }, state}
+  end
+
+  def handle_call({:runtime_control, action, reason}, _from, state) do
+    requested_at = DateTime.utc_now()
+    normalized_reason = normalize_control_reason(reason)
+
+    case normalize_control_action(action) do
+      :pause ->
+        changed = state.paused != true
+
+        next_state =
+          state
+          |> cancel_tick()
+          |> Map.put(:paused, true)
+          |> Map.put(:paused_at, state.paused_at || requested_at)
+          |> Map.put(:pause_reason, normalized_reason)
+          |> Map.put(:poll_check_in_progress, false)
+          |> Map.put(:next_poll_due_at_ms, nil)
+
+        notify_dashboard()
+
+        {:reply, runtime_control_payload(next_state, requested_at, changed, ["pause_intake", "pause_retries"]), next_state}
+
+      :resume ->
+        changed = state.paused == true
+
+        next_state =
+          state
+          |> Map.put(:paused, false)
+          |> Map.put(:paused_at, nil)
+          |> Map.put(:pause_reason, nil)
+          |> schedule_tick(0)
+
+        notify_dashboard()
+
+        {:reply, runtime_control_payload(next_state, requested_at, changed, ["resume_intake", "resume_retries", "poll"]), next_state}
+    end
   end
 
   def handle_call(:request_refresh, _from, state) do
@@ -1641,6 +1718,44 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp running_seconds(_started_at, _now), do: 0
+
+  defp normalize_control_action("pause"), do: :pause
+  defp normalize_control_action("resume"), do: :resume
+
+  defp normalize_control_reason(reason) when is_binary(reason) do
+    case String.trim(reason) do
+      "" -> nil
+      trimmed -> trimmed
+    end
+  end
+
+  defp normalize_control_reason(_reason), do: nil
+
+  defp runtime_control_payload(state, requested_at, changed, operations) do
+    %{
+      paused: state.paused == true,
+      changed: changed,
+      requested_at: requested_at,
+      operations: operations,
+      pause_reason: state.pause_reason,
+      paused_at: control_iso8601(state.paused_at)
+    }
+  end
+
+  defp cancel_tick(%State{tick_timer_ref: nil} = state), do: state
+
+  defp cancel_tick(%State{tick_timer_ref: timer_ref} = state) do
+    Process.cancel_timer(timer_ref, async: false, info: false)
+    %{state | tick_timer_ref: nil, tick_token: nil}
+  end
+
+  defp control_iso8601(%DateTime{} = datetime) do
+    datetime
+    |> DateTime.truncate(:second)
+    |> DateTime.to_iso8601()
+  end
+
+  defp control_iso8601(_datetime), do: nil
 
   defp integer_like(value) when is_integer(value) and value >= 0, do: value
 
