@@ -1220,35 +1220,37 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     message = blank_to_nil(field(pending_instruction, "message"))
     profile = blank_to_nil(field(pending_instruction, "profile"))
     queued_at = blank_to_nil(field(pending_instruction, "queued_at"))
+    queued_via_action = pending_action_label(field(pending_instruction, "queued_via_action"), lang)
     restart_requested_at = blank_to_nil(field(pending_instruction, "restart_requested_at"))
+    restart_requested_via_action = pending_action_label(field(pending_instruction, "restart_requested_via_action"), lang)
 
     cond do
-      message && restart_requested_at && profile ->
+      message && restart_requested_at && profile && restart_requested_via_action && queued_via_action ->
         tr(
           lang,
-          "Profile #{profile} queued at #{queued_at || "unknown"} and marked for restart at #{restart_requested_at}: #{message}",
-          "模板 #{profile} 已在 #{queued_at || "未知时间"} 排队，并于 #{restart_requested_at} 标记为重启应用：#{message}"
+          "Profile #{profile} queued via #{queued_via_action} at #{queued_at || "unknown"} and marked for restart via #{restart_requested_via_action} at #{restart_requested_at}: #{message}",
+          "模板 #{profile} 已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队，并于 #{restart_requested_at} 通过 #{restart_requested_via_action} 标记为重启应用：#{message}"
         )
 
-      message && restart_requested_at ->
+      message && restart_requested_at && restart_requested_via_action && queued_via_action ->
         tr(
           lang,
-          "Queued at #{queued_at || "unknown"} and marked for restart at #{restart_requested_at}: #{message}",
-          "已在 #{queued_at || "未知时间"} 排队，并于 #{restart_requested_at} 标记为重启应用：#{message}"
+          "Queued via #{queued_via_action} at #{queued_at || "unknown"} and marked for restart via #{restart_requested_via_action} at #{restart_requested_at}: #{message}",
+          "已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队，并于 #{restart_requested_at} 通过 #{restart_requested_via_action} 标记为重启应用：#{message}"
         )
 
-      message && profile ->
+      message && profile && queued_via_action ->
         tr(
           lang,
-          "Profile #{profile} queued at #{queued_at || "unknown"}: #{message}",
-          "模板 #{profile} 已在 #{queued_at || "未知时间"} 排队：#{message}"
+          "Profile #{profile} queued via #{queued_via_action} at #{queued_at || "unknown"}: #{message}",
+          "模板 #{profile} 已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队：#{message}"
         )
 
-      message ->
+      message && queued_via_action ->
         tr(
           lang,
-          "Queued at #{queued_at || "unknown"}: #{message}",
-          "已在 #{queued_at || "未知时间"} 排队：#{message}"
+          "Queued via #{queued_via_action} at #{queued_at || "unknown"}: #{message}",
+          "已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队：#{message}"
         )
 
       true ->
@@ -1258,6 +1260,11 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp pending_instruction_detail(_pending_instruction, lang),
     do: tr(lang, "Append or steer a run to queue the next operator instruction.", "通过追加指令或引导运行，把新的操作指令排队到下一次重启。")
+
+  defp pending_action_label("instruction", lang), do: tr(lang, "append", "追加指令")
+  defp pending_action_label("restart", lang), do: tr(lang, "restart", "重启运行")
+  defp pending_action_label("steer", lang), do: tr(lang, "steer", "引导运行")
+  defp pending_action_label(_action, _lang), do: nil
 
   defp action_disabled?(nil, _action), do: true
 

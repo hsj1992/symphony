@@ -278,6 +278,7 @@ defmodule SymphonyElixir.ExtensionsTest do
               "message" => message,
               "profile" => profile,
               "queued_at" => "2026-03-12T15:11:00+08:00",
+              "queued_via_action" => "instruction",
               "delivery_state" => "queued"
             }
           )
@@ -289,8 +290,10 @@ defmodule SymphonyElixir.ExtensionsTest do
               "message" => message,
               "profile" => profile,
               "queued_at" => "2026-03-12T15:11:00+08:00",
+              "queued_via_action" => "steer",
               "delivery_state" => "restart_requested",
-              "restart_requested_at" => "2026-03-12T15:12:00+08:00"
+              "restart_requested_at" => "2026-03-12T15:12:00+08:00",
+              "restart_requested_via_action" => "steer"
             }
           )
 
@@ -301,7 +304,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                 {__MODULE__, :pending_instruction},
                 Map.merge(pending, %{
                   "delivery_state" => "restart_requested",
-                  "restart_requested_at" => "2026-03-12T15:12:00+08:00"
+                  "restart_requested_at" => "2026-03-12T15:12:00+08:00",
+                  "restart_requested_via_action" => "restart"
                 })
               )
 
@@ -566,6 +570,7 @@ defmodule SymphonyElixir.ExtensionsTest do
               "message" => message,
               "profile" => profile,
               "queued_at" => "2026-03-13T18:11:00+08:00",
+              "queued_via_action" => "instruction",
               "delivery_state" => "queued"
             }
           )
@@ -577,8 +582,10 @@ defmodule SymphonyElixir.ExtensionsTest do
               "message" => message,
               "profile" => profile,
               "queued_at" => "2026-03-13T18:11:00+08:00",
+              "queued_via_action" => "steer",
               "delivery_state" => "restart_requested",
-              "restart_requested_at" => "2026-03-13T18:12:00+08:00"
+              "restart_requested_at" => "2026-03-13T18:12:00+08:00",
+              "restart_requested_via_action" => "steer"
             }
           )
 
@@ -589,7 +596,8 @@ defmodule SymphonyElixir.ExtensionsTest do
                 {__MODULE__, :pending_instruction},
                 Map.merge(pending, %{
                   "delivery_state" => "restart_requested",
-                  "restart_requested_at" => "2026-03-13T18:12:00+08:00"
+                  "restart_requested_at" => "2026-03-13T18:12:00+08:00",
+                  "restart_requested_via_action" => "restart"
                 })
               )
 
@@ -1295,6 +1303,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert queued_html =~ "已将指令排队，等待下次重启应用"
     assert queued_html =~ "待下次重启应用"
     assert queued_html =~ "Queue this for the next restart"
+    assert queued_html =~ "追加指令"
 
     logs_html =
       view
@@ -1436,6 +1445,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert steer_html =~ "Instruction queued and restart requested"
     assert steer_html =~ "Restart requested"
+    assert steer_html =~ "steer"
 
     assert_receive {:profile_console_action, steer_payload}
     assert (steer_payload["profile"] || steer_payload[:profile]) == "ops-triage"
