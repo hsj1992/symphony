@@ -216,45 +216,6 @@ pre,
   font-size: 1rem;
 }
 
-.hero-pulse-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.65rem;
-  margin-top: 1rem;
-}
-
-.pulse-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  min-height: 2rem;
-  padding: 0.42rem 0.8rem;
-  border-radius: 999px;
-  background: #ffffff;
-  border: 1px solid var(--line-strong);
-  color: var(--ink);
-  font-size: 0.85rem;
-  font-weight: 600;
-}
-
-.pulse-chip-live {
-  background: color-mix(in srgb, #fff 80%, var(--accent) 20%);
-  color: var(--accent-ink);
-}
-
-.pulse-chip strong {
-  font-weight: 700;
-}
-
-.pulse-dot {
-  width: 0.56rem;
-  height: 0.56rem;
-  border-radius: 999px;
-  background: var(--accent);
-  box-shadow: 0 0 0 0 rgba(16, 163, 127, 0.38);
-  animation: pulse-live 1.8s infinite;
-}
-
 .status-stack {
   display: grid;
   justify-items: end;

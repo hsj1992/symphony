@@ -268,10 +268,6 @@ defmodule SymphonyElixirWeb.ConsoleLive do
             <p class="hero-copy">
               <%= tr(@lang, "Runtime observability, bridge-backed issue control, and delivery state now live on one operator page.", "运行态观测、bridge 驱动的议题控制、以及交付状态现在收敛在同一个操作台页面。") %>
             </p>
-            <div class="hero-pulse-row">
-              <span class="pulse-chip pulse-chip-live"><span class="pulse-dot"></span><%= heartbeat_label(@now, @lang) %></span>
-              <span class="pulse-chip"><%= tr(@lang, "Runtime activity", "运行活跃度") %> <strong><%= runtime_activity_percent(@runtime_payload) %>%</strong></span>
-            </div>
           </div>
 
           <div class="status-stack">
