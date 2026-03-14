@@ -420,23 +420,21 @@ defmodule SymphonyElixirWeb.ConsoleLive do
             <%= if @runs == [] do %>
               <p class="empty-state"><%= tr(@lang, "The bridge has not returned any recent runs yet.", "bridge 还没有返回最近运行数据。") %></p>
             <% else %>
-              <div class="run-board run-board-sidebar">
-                <article :for={run <- @runs} class="run-card">
-                  <div class="run-card-head">
+              <div class="run-ledger">
+                <article :for={run <- @runs} class={"run-ledger-item run-ledger-#{run_ledger_status(field(run, "phase"))}"}>
+                  <div class="run-ledger-main">
                     <button
                       type="button"
-                      class="issue-link issue-button run-card-issue"
+                      class="issue-link issue-button run-ledger-issue"
                       phx-click="select_issue"
                       phx-value-issue={field(run, "issue")}
                     >
                       <%= field(run, "issue") %>
                     </button>
-                    <span class={state_badge_class(field(run, "phase"))}><%= field(run, "phase") || tr(@lang, "n/a", "未提供") %></span>
+                    <span class="run-ledger-route"><%= route_hint_text(run, @lang) %></span>
                   </div>
-                  <p class="run-card-summary"><%= recent_run_summary(run, @lang) %></p>
-                  <div class="run-card-meta">
-                    <span><%= tr(@lang, "Route", "路由") %>: <strong><%= route_hint_text(run, @lang) %></strong></span>
-                    <span class="mono"><%= field(run, "updated_at") || tr(@lang, "n/a", "未提供") %></span>
+                  <div class="run-ledger-meta mono">
+                    <%= run_ledger_time(field(run, "updated_at")) %>
                   </div>
                 </article>
               </div>
@@ -582,9 +580,16 @@ defmodule SymphonyElixirWeb.ConsoleLive do
           </div>
 
           <%= if is_nil(@status) do %>
-            <div class="empty-stage">
-              <p class="empty-state empty-state-strong"><%= tr(@lang, "Awaiting dispatch.", "等待派发。") %></p>
-              <p class="section-copy"><%= tr(@lang, "Load an issue from the left sidebar to turn this page into a live execution stage.", "先从左侧加载一个议题，这里才会变成实时执行主舞台。") %></p>
+            <div class="empty-stage radar-bg">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="empty-stage-icon">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="2" x2="12" y2="22"></line>
+                <line x1="2" y1="12" x2="22" y2="12"></line>
+              </svg>
+              <div class="empty-stage-content">
+                <p class="empty-state empty-state-strong"><%= tr(@lang, "Awaiting telemetry.", "等待遥测信号。") %></p>
+                <p class="section-copy"><%= tr(@lang, "Select an issue from the left sidebar to establish a live connection to the execution stage.", "从左侧选择议题，以建立与执行主舞台的实时连接。") %></p>
+              </div>
             </div>
           <% else %>
             <section class="mission-strip">
@@ -663,14 +668,16 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                     <p class="guidance-eyebrow"><%= tr(@lang, "What the cockpit suggests next", "控制台建议的下一步") %></p>
                     <p class="guidance-copy"><%= action_guidance(@status, @lang) %></p>
                   </article>
-                  <%= if @action_feedback do %>
-                    <div class={action_feedback_class(@action_feedback)}>
-                      <span class="feedback-icon"><%= action_feedback_icon(@action_feedback, @lang) %></span>
-                      <strong><%= field(@action_feedback, "label") %></strong>
-                      <span><%= field(@action_feedback, "message") %></span>
-                      <span :if={field(@action_feedback, "at")} class="mono"><%= field(@action_feedback, "at") %></span>
-                    </div>
-                  <% end %>
+                  <div class="feedback-slot">
+                    <%= if @action_feedback do %>
+                      <div class={action_feedback_class(@action_feedback)}>
+                        <span class="feedback-icon"><%= action_feedback_icon(@action_feedback, @lang) %></span>
+                        <strong><%= field(@action_feedback, "label") %></strong>
+                        <span><%= field(@action_feedback, "message") %></span>
+                        <span :if={field(@action_feedback, "at")} class="mono"><%= field(@action_feedback, "at") %></span>
+                      </div>
+                    <% end %>
+                  </div>
                   <form id="instruction-form" class="instruction-form" phx-submit="instruction_action">
                     <label class="toolbar-field toolbar-field-full">
                       <span><%= tr(@lang, "Operator instruction", "操作指令") %></span>
@@ -687,8 +694,8 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                     </label>
 
                     <div class="action-row action-row-primary">
-                      <button type="submit" name="intent" value="steer" class="subtle-button subtle-button-primary" disabled={action_disabled?(@status, "steer")}><%= tr(@lang, "Steer run", "引导运行") %></button>
-                      <button type="submit" name="intent" value="append" class="subtle-button" disabled={action_disabled?(@status, "instruction")}><%= tr(@lang, "Queue instruction", "排队指令") %></button>
+                      <button type="submit" name="intent" value="steer" class="subtle-button subtle-button-primary" disabled={action_disabled?(@status, "steer")} phx-disable-with={tr(@lang, "Steering...", "引导中...")}><%= tr(@lang, "Steer run", "引导运行") %></button>
+                      <button type="submit" name="intent" value="append" class="subtle-button" disabled={action_disabled?(@status, "instruction")} phx-disable-with={tr(@lang, "Queueing...", "排队中...")}><%= tr(@lang, "Queue instruction", "排队指令") %></button>
                     </div>
                   </form>
                 </div>
@@ -696,13 +703,13 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 <div class="command-deck-side">
                   <h4 class="guidance-eyebrow"><%= tr(@lang, "Run controls", "运行控制") %></h4>
                   <div class="action-row action-row-secondary">
-                    <button id="pause-run" type="button" class="subtle-button" phx-click="pause" disabled={action_disabled?(@status, "pause")}><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
-                    <button id="resume-run" type="button" class="subtle-button" phx-click="resume" disabled={action_disabled?(@status, "resume")}><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
-                    <button id="restart-run" type="button" class="subtle-button" phx-click="restart" disabled={action_disabled?(@status, "restart")}><%= tr(@lang, "Restart run", "重启运行") %></button>
-                    <button id="cancel-run" type="button" class="subtle-button subtle-button-danger" phx-click="cancel" disabled={action_disabled?(@status, "cancel")}><%= tr(@lang, "Cancel current run", "取消当前运行") %></button>
-                    <button id="hold-run" type="button" class="subtle-button" phx-click="hold" disabled={action_disabled?(@status, "hold")}><%= tr(@lang, "Hold issue", "挂起议题") %></button>
-                    <button id="release-run" type="button" class="subtle-button" phx-click="release" disabled={action_disabled?(@status, "release")}><%= tr(@lang, "Release hold", "解除挂起") %></button>
-                    <button id="clear-instruction" type="button" class="subtle-button" phx-click="clear_instruction" disabled={action_disabled?(@status, "clear_instruction")}><%= tr(@lang, "Clear instruction", "清除指令") %></button>
+                    <button id="pause-run" type="button" class="subtle-button" phx-click="pause" disabled={action_disabled?(@status, "pause")} phx-disable-with={tr(@lang, "Pausing...", "暂停中...")}><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
+                    <button id="resume-run" type="button" class="subtle-button" phx-click="resume" disabled={action_disabled?(@status, "resume")} phx-disable-with={tr(@lang, "Resuming...", "恢复中...")}><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
+                    <button id="restart-run" type="button" class="subtle-button" phx-click="restart" disabled={action_disabled?(@status, "restart")} phx-disable-with={tr(@lang, "Restarting...", "重启中...")}><%= tr(@lang, "Restart run", "重启运行") %></button>
+                    <button id="cancel-run" type="button" class="subtle-button subtle-button-danger" phx-click="cancel" disabled={action_disabled?(@status, "cancel")} phx-disable-with={tr(@lang, "Cancelling...", "取消中...")}><%= tr(@lang, "Cancel current run", "取消当前运行") %></button>
+                    <button id="hold-run" type="button" class="subtle-button" phx-click="hold" disabled={action_disabled?(@status, "hold")} phx-disable-with={tr(@lang, "Holding...", "挂起中...")}><%= tr(@lang, "Hold issue", "挂起议题") %></button>
+                    <button id="release-run" type="button" class="subtle-button" phx-click="release" disabled={action_disabled?(@status, "release")} phx-disable-with={tr(@lang, "Releasing...", "解除中...")}><%= tr(@lang, "Release hold", "解除挂起") %></button>
+                    <button id="clear-instruction" type="button" class="subtle-button" phx-click="clear_instruction" disabled={action_disabled?(@status, "clear_instruction")} phx-disable-with={tr(@lang, "Clearing...", "清除中...")}><%= tr(@lang, "Clear instruction", "清除指令") %></button>
                   </div>
                   <p class="section-copy action-copy">
                     <%= tr(@lang, "Queue instruction stores operator intent for the next restart. Steer run stores it and requests the restart path immediately.", "排队指令会把操作员意图留给下一次重启应用；引导运行会同时落下这条指令并立即请求重启路径。") %>
@@ -892,7 +899,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                           <h4><%= tr(@lang, "Agent stream", "执行流") %></h4>
                         </div>
                         <%= if content = agent_log_content(field(@status, "logs")) do %>
-                          <pre class="code-panel"><%= content %></pre>
+                          <pre class={"code-panel #{if runtime_scope(@status) == "running", do: "code-panel-live", else: ""}"}><%= content %></pre>
                         <% else %>
                           <p class="empty-state"><%= tr(@lang, "No agent log returned.", "当前没有返回执行日志。") %></p>
                         <% end %>
@@ -1437,6 +1444,22 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     end
   end
 
+  defp run_ledger_status(phase) do
+    phase_str = to_string(phase || "") |> String.downcase()
+
+    cond do
+      phase_str in ["validation", "sync", "implementation", "running", "rework"] -> "active"
+      phase_str in ["handoff", "review", "human review", "done", "merging"] -> "done"
+      true -> "neutral"
+    end
+  end
+
+  defp run_ledger_time(nil), do: ""
+
+  defp run_ledger_time(time) when is_binary(time) do
+    String.slice(time, 11..15) || time
+  end
+
   defp meter_width_style(percent) when is_integer(percent),
     do: "width: #{min(max(percent, 0), 100)}%;"
 
@@ -1444,12 +1467,6 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     running = field(field(payload, "counts"), "running") || 0
     retrying = field(field(payload, "counts"), "retrying") || 0
     min(running * 45 + retrying * 15, 100)
-  end
-
-  defp recent_run_summary(run, lang) do
-    route = route_hint_text(run, lang)
-    updated = field(run, "updated_at") || tr(lang, "n/a", "未提供")
-    tr(lang, "Route", "路由") <> ": #{route} · " <> tr(lang, "Updated", "更新时间") <> ": #{updated}"
   end
 
   defp route_hint_text(run, lang) do
@@ -2153,13 +2170,6 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         total + runtime_seconds_from_started_at(field(entry, "started_at"), now)
       end)
   end
-
-  defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
-    "#{format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))} / #{turn_count}"
-  end
-
-  defp format_runtime_and_turns(started_at, _turn_count, now),
-    do: format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))
 
   defp format_runtime_seconds(seconds) when is_integer(seconds) and seconds >= 3600 do
     hours = div(seconds, 3600)
