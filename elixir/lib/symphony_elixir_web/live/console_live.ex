@@ -555,100 +555,109 @@ defmodule SymphonyElixirWeb.ConsoleLive do
             <% end %>
           </section>
 
-          <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title"><%= tr(@lang, "Run detail", "运行详情") %></h2>
-              <p class="section-copy"><%= tr(@lang, "Loaded from `/status` for the selected issue.", "展示当前选中议题的 `/status` 聚合结果。") %></p>
-            </div>
-          </div>
-
           <%= if is_nil(@status) do %>
-            <div class="empty-stage radar-bg">
-              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="empty-stage-icon">
-                <circle cx="12" cy="12" r="10"></circle>
-                <line x1="12" y1="2" x2="12" y2="22"></line>
-                <line x1="2" y1="12" x2="22" y2="12"></line>
-              </svg>
-              <div class="empty-stage-content">
-                <p class="empty-state empty-state-strong"><%= tr(@lang, "Awaiting telemetry.", "等待遥测信号。") %></p>
-                <p class="section-copy"><%= tr(@lang, "Select an issue from the left sidebar to establish a live connection to the execution stage.", "从左侧选择议题，以建立与执行主舞台的实时连接。") %></p>
-              </div>
-            </div>
-          <% else %>
-            <section class="mission-strip">
-              <div class="section-header section-header-tight">
+            <section class="section-card">
+              <div class="section-header">
                 <div>
-                  <h3 class="section-subtitle"><%= tr(@lang, "Mission progress", "任务进度") %></h3>
-                  <p class="section-copy"><%= tr(@lang, "Watch the selected issue move from queue to delivery without leaving the cockpit.", "在控制台里直接观察当前议题从排队到交付的推进。") %></p>
+                  <h2 class="section-title"><%= tr(@lang, "Run detail", "运行详情") %></h2>
+                  <p class="section-copy"><%= tr(@lang, "Loaded from `/status` for the selected issue.", "展示当前选中议题的 `/status` 聚合结果。") %></p>
                 </div>
               </div>
-              <div class="progress-track">
-                <article :for={step <- phase_progress_steps(@status, @lang)} class={phase_step_class(step.state)}>
-                  <div class="progress-dot"></div>
-                  <div class="progress-content">
-                    <p class="progress-title"><%= step.title %></p>
-                    <p class="progress-copy"><%= step.copy %></p>
-                    <div :if={step.badge} class="progress-badge-row">
-                      <a :if={step.url} class="status-badge status-badge-link" href={step.url} target="_blank" rel="noreferrer">
-                        <%= step.badge %>
-                      </a>
-                      <span :if={!step.url} class="status-badge status-badge-embedded"><%= step.badge %></span>
-                    </div>
+              <div class="empty-stage radar-bg empty-stage-padded">
+                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="empty-stage-icon">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <line x1="12" y1="2" x2="12" y2="22"></line>
+                  <line x1="2" y1="12" x2="22" y2="12"></line>
+                </svg>
+                <div class="empty-stage-content">
+                  <p class="empty-state empty-state-strong"><%= tr(@lang, "Awaiting telemetry.", "等待遥测信号。") %></p>
+                  <p class="section-copy"><%= tr(@lang, "Select an issue from the left sidebar to establish a live connection to the execution stage.", "从左侧选择议题，以建立与执行主舞台的实时连接。") %></p>
+                </div>
+              </div>
+            </section>
+          <% else %>
+            <section class="section-card">
+              <div class="section-header">
+                <div>
+                  <h2 class="section-title"><%= tr(@lang, "Run detail", "运行详情") %></h2>
+                  <p class="section-copy"><%= tr(@lang, "Loaded from `/status` for the selected issue.", "展示当前选中议题的 `/status` 聚合结果。") %></p>
+                </div>
+              </div>
+
+              <div class="mission-strip">
+                <div class="section-header section-header-tight">
+                  <div>
+                    <h3 class="section-subtitle"><%= tr(@lang, "Mission progress", "任务进度") %></h3>
+                    <p class="section-copy"><%= tr(@lang, "Watch the selected issue move from queue to delivery without leaving the cockpit.", "在控制台里直接观察当前议题从排队到交付的推进。") %></p>
                   </div>
+                </div>
+                <div class="progress-track">
+                  <article :for={step <- phase_progress_steps(@status, @lang)} class={phase_step_class(step.state)}>
+                    <div class="progress-dot"></div>
+                    <div class="progress-content">
+                      <p class="progress-title"><%= step.title %></p>
+                      <p class="progress-copy"><%= step.copy %></p>
+                      <div :if={step.badge} class="progress-badge-row">
+                        <a :if={step.url} class="status-badge status-badge-link" href={step.url} target="_blank" rel="noreferrer">
+                          <%= step.badge %>
+                        </a>
+                        <span :if={!step.url} class="status-badge status-badge-embedded"><%= step.badge %></span>
+                      </div>
+                    </div>
+                  </article>
+                </div>
+              </div>
+
+              <div class="detail-grid">
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Issue", "议题") %></p>
+                  <p class="metric-value"><%= field(@status, "issue") %></p>
+                  <p class="metric-detail"><%= field(@status, "summary") || tr(@lang, "n/a", "未提供") %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Phase", "阶段") %></p>
+                  <p class="metric-value"><%= field(@status, "phase") || tr(@lang, "n/a", "未提供") %></p>
+                  <p class="metric-detail"><%= tr(@lang, "Route hint", "路由提示") %>：<%= field(@status, "route_hint") || tr(@lang, "n/a", "未提供") %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Branch / commit", "分支 / 提交") %></p>
+                  <p class="metric-value mono"><%= field(@status, "branch") || tr(@lang, "n/a", "未提供") %></p>
+                  <p class="metric-detail mono"><%= field(@status, "commit") || tr(@lang, "n/a", "未提供") %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Next", "下一步") %></p>
+                  <p class="metric-value"><%= field(@status, "next") || tr(@lang, "n/a", "未提供") %></p>
+                  <p class="metric-detail"><%= tr(@lang, "Updated", "更新时间") %>：<span class="mono"><%= field(@status, "updated_at") || tr(@lang, "n/a", "未提供") %></span></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Runtime", "运行时") %></p>
+                  <p class="metric-value"><%= runtime_label(field(@status, "runtime_control"), @lang) %></p>
+                  <p class="metric-detail"><%= runtime_reason(field(@status, "runtime_control"), @lang) %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Issue control", "议题控制") %></p>
+                  <p class="metric-value"><%= issue_control_label(field(@status, "issue_control"), @lang) %></p>
+                  <p class="metric-detail"><%= issue_control_reason(field(@status, "issue_control"), @lang) %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Live session", "实时会话") %></p>
+                  <p class="metric-value mono"><%= runtime_issue_label(field(@status, "runtime_issue"), @lang) %></p>
+                  <p class="metric-detail"><%= runtime_issue_detail(field(@status, "runtime_issue"), @lang) %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Operator instruction", "操作指令") %></p>
+                  <p class="metric-value"><%= operator_instruction_label(@status, @lang) %></p>
+                  <p class="metric-detail"><%= operator_instruction_detail(@status, @lang) %></p>
                 </article>
               </div>
             </section>
-
-            <div class="detail-grid">
-              <article class="metric-card">
-                <p class="metric-label"><%= tr(@lang, "Issue", "议题") %></p>
-                <p class="metric-value"><%= field(@status, "issue") %></p>
-                <p class="metric-detail"><%= field(@status, "summary") || tr(@lang, "n/a", "未提供") %></p>
-              </article>
-
-              <article class="metric-card">
-                <p class="metric-label"><%= tr(@lang, "Phase", "阶段") %></p>
-                <p class="metric-value"><%= field(@status, "phase") || tr(@lang, "n/a", "未提供") %></p>
-                <p class="metric-detail"><%= tr(@lang, "Route hint", "路由提示") %>：<%= field(@status, "route_hint") || tr(@lang, "n/a", "未提供") %></p>
-              </article>
-
-              <article class="metric-card">
-                <p class="metric-label"><%= tr(@lang, "Branch / commit", "分支 / 提交") %></p>
-                <p class="metric-value mono"><%= field(@status, "branch") || tr(@lang, "n/a", "未提供") %></p>
-                <p class="metric-detail mono"><%= field(@status, "commit") || tr(@lang, "n/a", "未提供") %></p>
-              </article>
-
-              <article class="metric-card">
-                <p class="metric-label"><%= tr(@lang, "Next", "下一步") %></p>
-                <p class="metric-value"><%= field(@status, "next") || tr(@lang, "n/a", "未提供") %></p>
-                <p class="metric-detail"><%= tr(@lang, "Updated", "更新时间") %>：<span class="mono"><%= field(@status, "updated_at") || tr(@lang, "n/a", "未提供") %></span></p>
-              </article>
-
-              <article class="metric-card">
-                <p class="metric-label"><%= tr(@lang, "Runtime", "运行时") %></p>
-                <p class="metric-value"><%= runtime_label(field(@status, "runtime_control"), @lang) %></p>
-                <p class="metric-detail"><%= runtime_reason(field(@status, "runtime_control"), @lang) %></p>
-              </article>
-
-              <article class="metric-card">
-                <p class="metric-label"><%= tr(@lang, "Issue control", "议题控制") %></p>
-                <p class="metric-value"><%= issue_control_label(field(@status, "issue_control"), @lang) %></p>
-                <p class="metric-detail"><%= issue_control_reason(field(@status, "issue_control"), @lang) %></p>
-              </article>
-
-              <article class="metric-card">
-                <p class="metric-label"><%= tr(@lang, "Live session", "实时会话") %></p>
-                <p class="metric-value mono"><%= runtime_issue_label(field(@status, "runtime_issue"), @lang) %></p>
-                <p class="metric-detail"><%= runtime_issue_detail(field(@status, "runtime_issue"), @lang) %></p>
-              </article>
-
-              <article class="metric-card">
-                <p class="metric-label"><%= tr(@lang, "Operator instruction", "操作指令") %></p>
-                <p class="metric-value"><%= operator_instruction_label(@status, @lang) %></p>
-                <p class="metric-detail"><%= operator_instruction_detail(@status, @lang) %></p>
-              </article>
-            </div>
 
             <section class={command_deck_class(@action_feedback)}>
               <div class="command-deck-grid">
@@ -884,7 +893,6 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               </section>
             </div>
           <% end %>
-          </section>
         </main>
       </div>
     </section>

@@ -768,6 +768,7 @@ pre,
 }
 
 .mission-strip {
+  margin-top: 1.25rem;
   margin-bottom: 1rem;
 }
 
@@ -1208,6 +1209,10 @@ pre,
   padding: 4.2rem 1rem;
   text-align: center;
   min-height: 300px;
+}
+
+.empty-stage-padded {
+  margin-top: 1rem;
 }
 
 .radar-bg {
