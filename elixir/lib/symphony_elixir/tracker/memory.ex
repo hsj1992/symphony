@@ -37,12 +37,41 @@ defmodule SymphonyElixir.Tracker.Memory do
 
   @spec create_comment(String.t(), String.t()) :: :ok | {:error, term()}
   def create_comment(issue_id, body) do
+    updated_issues =
+      issue_entries()
+      |> Enum.map(fn
+        %Issue{id: ^issue_id} = issue ->
+          comments =
+            issue.feedback_comments ++
+              [
+                %{
+                  author: "Symphony",
+                  body: body,
+                  updated_at: DateTime.utc_now() |> DateTime.to_iso8601()
+                }
+              ]
+
+          %{issue | feedback_comments: comments}
+
+        issue ->
+          issue
+      end)
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, updated_issues)
     send_event({:memory_tracker_comment, issue_id, body})
     :ok
   end
 
   @spec update_issue_state(String.t(), String.t()) :: :ok | {:error, term()}
   def update_issue_state(issue_id, state_name) do
+    updated_issues =
+      issue_entries()
+      |> Enum.map(fn
+        %Issue{id: ^issue_id} = issue -> %{issue | state: state_name}
+        issue -> issue
+      end)
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, updated_issues)
     send_event({:memory_tracker_state_update, issue_id, state_name})
     :ok
   end

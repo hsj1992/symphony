@@ -4,22 +4,34 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   """
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
+  alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
   @default_lang "zh"
   @default_refresh_ms 15_000
+  @runtime_tick_ms 1_000
 
   @impl true
   def mount(_params, _session, socket) do
     lang = @default_lang
+    adapters = adapter_options()
+    selected_adapter = default_adapter_id(adapters)
 
     socket =
       socket
       |> assign(:lang, lang)
+      |> assign(:adapters, adapters)
+      |> assign(:selected_adapter, selected_adapter)
+      |> assign(:profiles, [])
+      |> assign(:selected_profile, nil)
+      |> assign(:profile_defaults_for, nil)
       |> assign(:meta, nil)
       |> assign(:runs, [])
       |> assign(:status, nil)
+      |> assign(:runtime_payload, load_runtime_payload())
+      |> assign(:now, DateTime.utc_now())
       |> assign(:selected_issue, nil)
       |> assign(:error_message, nil)
+      |> assign(:action_feedback, nil)
       |> assign(:log_options, log_options(lang))
       |> assign(:refresh_options, refresh_options(lang))
       |> assign(:issue_query, "")
@@ -37,7 +49,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     socket = refresh_console(socket, load_status?: false)
 
     if connected?(socket) do
+      :ok = ObservabilityPubSub.subscribe()
       schedule_refresh(socket.assigns.refresh_interval_ms)
+      schedule_runtime_tick()
     end
 
     {:ok, socket}
@@ -46,12 +60,19 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   @impl true
   def handle_params(params, _uri, socket) do
     lang = normalize_lang(params["lang"])
+    adapters = adapter_options()
+    selected_adapter = selected_adapter_id(adapters, params["adapter"])
+    selected_profile = blank_to_nil(params["profile"])
 
     {:noreply,
      socket
      |> assign(:lang, lang)
+     |> assign(:adapters, adapters)
+     |> assign(:selected_adapter, selected_adapter)
+     |> assign(:selected_profile, selected_profile)
      |> assign(:log_options, log_options(lang))
-     |> assign(:refresh_options, refresh_options(lang))}
+     |> assign(:refresh_options, refresh_options(lang))
+     |> refresh_console(load_status?: not is_nil(socket.assigns.selected_issue))}
   end
 
   @impl true
@@ -61,13 +82,57 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   end
 
   @impl true
+  def handle_info(:runtime_tick, socket) do
+    schedule_runtime_tick()
+    {:noreply, assign(socket, :now, DateTime.utc_now())}
+  end
+
+  @impl true
+  def handle_info(:observability_updated, socket) do
+    {:noreply,
+     socket
+     |> assign(:runtime_payload, load_runtime_payload())
+     |> assign(:now, DateTime.utc_now())}
+  end
+
+  @impl true
   def handle_event("refresh", _params, socket) do
     {:noreply, refresh_console(socket, load_status?: not is_nil(socket.assigns.selected_issue))}
   end
 
   @impl true
   def handle_event("set_lang", %{"lang" => lang}, socket) do
-    {:noreply, push_patch(socket, to: console_path(normalize_lang(lang)))}
+    {:noreply,
+     push_patch(
+       socket,
+       to: console_path(normalize_lang(lang), socket.assigns.selected_adapter, socket.assigns.selected_profile)
+     )}
+  end
+
+  @impl true
+  def handle_event("set_adapter", %{"adapter" => adapter_id}, socket) do
+    {:noreply,
+     socket
+     |> assign(:selected_adapter, selected_adapter_id(socket.assigns.adapters, adapter_id))
+     |> assign(:selected_profile, nil)
+     |> assign(:profile_defaults_for, nil)
+     |> assign(:profiles, [])
+     |> assign(:selected_issue, nil)
+     |> assign(:issue_query, "")
+     |> assign(:branch_override, "")
+     |> assign(:status, nil)
+     |> assign(:instruction_message, "")
+     |> assign(:active_log_stream, nil)
+     |> push_patch(to: console_path(socket.assigns.lang, adapter_id, nil))}
+  end
+
+  @impl true
+  def handle_event("set_profile", %{"profile" => profile_id}, socket) do
+    {:noreply,
+     socket
+     |> assign(:selected_profile, blank_to_nil(profile_id))
+     |> assign(:profile_defaults_for, nil)
+     |> push_patch(to: console_path(socket.assigns.lang, socket.assigns.selected_adapter, blank_to_nil(profile_id)))}
   end
 
   @impl true
@@ -135,7 +200,37 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   end
 
   @impl true
+  def handle_event("cancel", _params, socket) do
+    {:noreply, perform_action(socket, %{"action" => "cancel"})}
+  end
+
+  @impl true
+  def handle_event("restart", _params, socket) do
+    {:noreply, perform_action(socket, %{"action" => "restart"})}
+  end
+
+  @impl true
+  def handle_event("clear_instruction", _params, socket) do
+    {:noreply, perform_action(socket, %{"action" => "clear_instruction"})}
+  end
+
+  @impl true
+  def handle_event("hold", _params, socket) do
+    {:noreply, perform_action(socket, %{"action" => "hold"})}
+  end
+
+  @impl true
+  def handle_event("release", _params, socket) do
+    {:noreply, perform_action(socket, %{"action" => "release"})}
+  end
+
+  @impl true
   def handle_event("append_instruction", %{"message" => message, "sync_linear" => sync_linear}, socket) do
+    handle_event("instruction_action", %{"message" => message, "sync_linear" => sync_linear, "intent" => "append"}, socket)
+  end
+
+  @impl true
+  def handle_event("instruction_action", %{"message" => message, "sync_linear" => sync_linear} = params, socket) do
     socket =
       socket
       |> assign(:instruction_message, message || "")
@@ -144,10 +239,16 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     if String.trim(socket.assigns.instruction_message) == "" do
       {:noreply, put_flash(socket, :error, tr(socket.assigns.lang, "Instruction cannot be empty", "补充指令不能为空"))}
     else
+      intent =
+        case params["intent"] do
+          "steer" -> "steer"
+          _ -> "instruction"
+        end
+
       {:noreply,
        socket
        |> perform_action(%{
-         "action" => "instruction",
+         "action" => intent,
          "message" => socket.assigns.instruction_message,
          "sync_linear" => socket.assigns.sync_linear
        })
@@ -163,10 +264,14 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         <div class="hero-grid">
           <div>
             <p class="eyebrow"><%= tr(@lang, "Symphony Workflow", "Symphony 工作流") %></p>
-            <h1 class="hero-title"><%= tr(@lang, "Bridge Console", "工作流控制台") %></h1>
+            <h1 class="hero-title"><%= tr(@lang, "Operator Cockpit", "运行控制台") %></h1>
             <p class="hero-copy">
-              <%= tr(@lang, "This is the standalone Symphony workflow console. Recent runs, issue detail, and control actions all flow through the bridge API instead of being embedded into the product application.", "这是独立于业务前后端的 Symphony 工作流控制台。最近运行、议题详情和控制动作都通过 bridge API 完成，而不是嵌入到产品系统里。") %>
+              <%= tr(@lang, "Runtime observability, bridge-backed issue control, and delivery state now live on one operator page.", "运行态观测、bridge 驱动的议题控制、以及交付状态现在收敛在同一个操作台页面。") %>
             </p>
+            <div class="hero-pulse-row">
+              <span class="pulse-chip pulse-chip-live"><span class="pulse-dot"></span><%= heartbeat_label(@now, @lang) %></span>
+              <span class="pulse-chip"><%= tr(@lang, "Runtime activity", "运行活跃度") %> <strong><%= runtime_activity_percent(@runtime_payload) %>%</strong></span>
+            </div>
           </div>
 
           <div class="status-stack">
@@ -179,6 +284,28 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               <%= refresh_badge_label(@lang, @refresh_interval_ms) %>
             </span>
             <div class="locale-switch">
+              <select
+                :if={length(@adapters) > 1}
+                id="adapter-select"
+                class="form-input form-input-compact"
+                phx-change="set_adapter"
+                name="adapter"
+              >
+                <option :for={adapter <- @adapters} value={adapter.id} selected={adapter.id == @selected_adapter}>
+                  <%= adapter.label %>
+                </option>
+              </select>
+              <select
+                :if={@profiles != []}
+                id="profile-select"
+                class="form-input form-input-compact"
+                phx-change="set_profile"
+                name="profile"
+              >
+                <option :for={profile <- @profiles} value={profile_id(profile)} selected={profile_id(profile) == @selected_profile}>
+                  <%= profile_label(profile, @lang) %>
+                </option>
+              </select>
               <button id="lang-zh" type="button" class={locale_button_class(@lang, "zh")} phx-click="set_lang" phx-value-lang="zh">中文</button>
               <button id="lang-en" type="button" class={locale_button_class(@lang, "en")} phx-click="set_lang" phx-value-lang="en">EN</button>
             </div>
@@ -205,108 +332,231 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         </section>
       <% end %>
 
-      <section class="section-card">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title"><%= tr(@lang, "Controls", "控制面板") %></h2>
-            <p class="section-copy"><%= tr(@lang, "Load an issue from the bridge, tune refresh, and include doctor/workpad/log data on demand.", "从 bridge 加载议题，按需查看 doctor、workpad、日志，并调整刷新策略。") %></p>
-          </div>
-          <button type="button" class="subtle-button" phx-click="refresh"><%= tr(@lang, "Refresh now", "立即刷新") %></button>
-        </div>
-
-        <form id="issue-query-form" class="toolbar-form" phx-submit="load_issue">
-          <label class="toolbar-field">
-            <span><%= tr(@lang, "Issue key", "议题编号") %></span>
-            <input class="form-input" type="text" name="issue" value={@issue_query} placeholder={tr(@lang, "For example PROJ-123", "例如 PROJ-123")} />
-          </label>
-
-          <label class="toolbar-field">
-            <span><%= tr(@lang, "Branch override", "分支覆盖") %></span>
-            <input class="form-input" type="text" name="branch" value={@branch_override} placeholder={tr(@lang, "Optional", "可选")} />
-          </label>
-
-          <label class="toolbar-field">
-            <span><%= tr(@lang, "Events", "事件条数") %></span>
-            <input class="form-input" type="number" min="1" max="50" name="events" value={@events_limit} />
-          </label>
-
-          <label class="toolbar-field">
-            <span><%= tr(@lang, "Logs", "日志范围") %></span>
-            <select class="form-input" name="include_logs">
-              <option :for={{label, value} <- @log_options} value={value} selected={value == @include_logs}>
-                <%= label %>
-              </option>
-            </select>
-          </label>
-
-          <label class="toolbar-field">
-            <span><%= tr(@lang, "Auto refresh", "自动刷新") %></span>
-            <select class="form-input" name="refresh_interval" phx-change="set_refresh_interval">
-              <option :for={{label, value} <- @refresh_options} value={value} selected={refresh_selected?(value, @refresh_interval_ms)}>
-                <%= label %>
-              </option>
-            </select>
-          </label>
-
-          <label class="checkbox-field">
-            <input type="checkbox" name="doctor" value="true" checked={@include_doctor} />
-            <span><%= tr(@lang, "Include doctor", "包含 doctor") %></span>
-          </label>
-
-          <label class="checkbox-field">
-            <input type="checkbox" name="workpad" value="true" checked={@include_workpad} />
-            <span><%= tr(@lang, "Include workpad", "包含 workpad") %></span>
-          </label>
-
-          <button type="submit" class="subtle-button subtle-button-primary"><%= tr(@lang, "Load issue", "加载议题") %></button>
-        </form>
-      </section>
-
-      <div class="console-grid">
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title"><%= tr(@lang, "Recent runs", "最近运行") %></h2>
-              <p class="section-copy"><%= tr(@lang, "Project-local bridge state from `/runs`.", "来自项目本地 `/runs` 的 bridge 运行态。") %></p>
+      <div class="cockpit-layout">
+        <aside class="operator-sidebar">
+          <section class="section-card">
+            <div class="section-header section-header-tight">
+              <div>
+                <h2 class="section-title"><%= tr(@lang, "Load context", "加载上下文") %></h2>
+                <p class="section-copy"><%= tr(@lang, "Pick an issue, tune refresh, and bring doctor/workpad/log context into the cockpit.", "选择议题、调整刷新，并把 doctor / workpad / 日志上下文带进控制台。") %></p>
+              </div>
+              <button type="button" class="subtle-button" phx-click="refresh"><%= tr(@lang, "Refresh now", "立即刷新") %></button>
             </div>
-          </div>
 
-          <%= if @runs == [] do %>
-        <p class="empty-state"><%= tr(@lang, "The bridge has not returned any recent runs yet.", "bridge 还没有返回最近运行数据。") %></p>
-          <% else %>
-            <div class="table-wrap">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th><%= tr(@lang, "Issue", "议题") %></th>
-                    <th><%= tr(@lang, "Phase", "阶段") %></th>
-                    <th><%= tr(@lang, "Route", "路由") %></th>
-                    <th><%= tr(@lang, "Updated", "更新时间") %></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={run <- @runs}>
-                    <td>
-                      <button
-                        type="button"
-                        class="issue-link issue-button"
-                        phx-click="select_issue"
-                        phx-value-issue={field(run, "issue")}
-                      >
-                        <%= field(run, "issue") %>
-                      </button>
-                    </td>
-                    <td><span class={state_badge_class(field(run, "phase"))}><%= field(run, "phase") || tr(@lang, "n/a", "未提供") %></span></td>
-                    <td><%= field(run, "route_hint") || tr(@lang, "n/a", "未提供") %></td>
-                    <td class="mono"><%= field(run, "updated_at") || tr(@lang, "n/a", "未提供") %></td>
-                  </tr>
-                </tbody>
-              </table>
+            <form id="issue-query-form" class="toolbar-form toolbar-form-sidebar" phx-submit="load_issue">
+              <div :if={selected_profile(@profiles, @selected_profile)} class="toolbar-field toolbar-field-full">
+                <span><%= tr(@lang, "Execution profile", "执行模板") %></span>
+                <div class="inspector-card">
+                  <div class="inspector-card-head">
+                    <h4><%= profile_label(selected_profile(@profiles, @selected_profile), @lang) %></h4>
+                  </div>
+                  <p class="section-copy">
+                    <%= profile_description(selected_profile(@profiles, @selected_profile), @lang) %>
+                  </p>
+                </div>
+              </div>
+
+              <label class="toolbar-field toolbar-field-full">
+                <span><%= tr(@lang, "Issue key", "议题编号") %></span>
+                <input class="form-input" type="text" name="issue" value={@issue_query} placeholder={tr(@lang, "For example PROJ-123", "例如 PROJ-123")} />
+              </label>
+
+              <div class="toolbar-inline-grid">
+                <label class="toolbar-field">
+                  <span><%= tr(@lang, "Branch override", "分支覆盖") %></span>
+                  <input class="form-input" type="text" name="branch" value={@branch_override} placeholder={tr(@lang, "Optional", "可选")} />
+                </label>
+
+                <label class="toolbar-field">
+                  <span><%= tr(@lang, "Events", "事件条数") %></span>
+                  <input class="form-input" type="number" min="1" max="50" name="events" value={@events_limit} />
+                </label>
+              </div>
+
+              <div class="toolbar-inline-grid">
+                <label class="toolbar-field">
+                  <span><%= tr(@lang, "Logs", "日志范围") %></span>
+                  <select class="form-input" name="include_logs">
+                    <option :for={{label, value} <- @log_options} value={value} selected={value == @include_logs}>
+                      <%= label %>
+                    </option>
+                  </select>
+                </label>
+
+                <label class="toolbar-field">
+                  <span><%= tr(@lang, "Auto refresh", "自动刷新") %></span>
+                  <select class="form-input" name="refresh_interval" phx-change="set_refresh_interval">
+                    <option :for={{label, value} <- @refresh_options} value={value} selected={refresh_selected?(value, @refresh_interval_ms)}>
+                      <%= label %>
+                    </option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="toolbar-checkbox-grid">
+                <label class="checkbox-field">
+                  <input type="checkbox" name="doctor" value="true" checked={@include_doctor} />
+                  <span><%= tr(@lang, "Include doctor", "包含 doctor") %></span>
+                </label>
+
+                <label class="checkbox-field">
+                  <input type="checkbox" name="workpad" value="true" checked={@include_workpad} />
+                  <span><%= tr(@lang, "Include workpad", "包含 workpad") %></span>
+                </label>
+              </div>
+
+              <button type="submit" class="subtle-button subtle-button-primary"><%= tr(@lang, "Load issue", "加载议题") %></button>
+            </form>
+          </section>
+
+          <section class="section-card">
+            <div class="section-header section-header-tight">
+              <div>
+                <h2 class="section-title"><%= tr(@lang, "Recent runs", "最近运行") %></h2>
+                <p class="section-copy"><%= tr(@lang, "Bridge-backed runs that can be pulled into the execution stage instantly.", "bridge 返回的最近运行，可一键拉入执行主舞台。") %></p>
+              </div>
             </div>
-          <% end %>
-        </section>
 
-        <section class="section-card">
+            <%= if @runs == [] do %>
+              <p class="empty-state"><%= tr(@lang, "The bridge has not returned any recent runs yet.", "bridge 还没有返回最近运行数据。") %></p>
+            <% else %>
+              <div class="run-ledger">
+                <article :for={run <- @runs} class={"run-ledger-item run-ledger-#{run_ledger_status(field(run, "phase"))}"}>
+                  <div class="run-ledger-main">
+                    <button
+                      type="button"
+                      class="issue-link issue-button run-ledger-issue"
+                      phx-click="select_issue"
+                      phx-value-issue={field(run, "issue")}
+                    >
+                      <%= field(run, "issue") %>
+                    </button>
+                    <span class="run-ledger-route"><%= route_hint_text(run, @lang) %></span>
+                    <div class="run-ledger-sparkline">
+                      <span :for={segment <- run_ledger_segments(run)} class={run_ledger_segment_class(segment)}></span>
+                    </div>
+                  </div>
+                  <div class="run-ledger-meta mono">
+                    <%= run_ledger_time(field(run, "updated_at")) %>
+                  </div>
+                </article>
+              </div>
+            <% end %>
+          </section>
+
+          <section class="section-card">
+            <div class="section-header section-header-tight">
+              <div>
+                <h2 class="section-title"><%= tr(@lang, "Runtime Overview", "运行态总览") %></h2>
+                <p class="section-copy"><%= tr(@lang, "Observe runtime pulse, active sessions, and retry pressure without leaving the sidebar.", "在侧栏中直接观察 runtime 脉搏、活跃会话与重试压力。") %></p>
+              </div>
+            </div>
+
+            <article class="ribbon-card ribbon-card-runtime ribbon-card-sidebar">
+              <p class="metric-label"><%= tr(@lang, "Runtime pulse", "运行脉搏") %></p>
+              <h3 class="ribbon-title"><%= heartbeat_label(@now, @lang) %></h3>
+              <p class="ribbon-copy"><%= heartbeat_copy(@runtime_payload, @lang) %></p>
+              <div class="activity-meter">
+                <span style={meter_width_style(runtime_activity_percent(@runtime_payload))}></span>
+              </div>
+            </article>
+
+            <%= if runtime_error = field(@runtime_payload, "error") do %>
+              <p class="empty-state"><%= runtime_error_message(runtime_error, @lang) %></p>
+            <% else %>
+              <section class="metric-grid runtime-sidebar-grid">
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Running", "运行中") %></p>
+                  <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "running") || 0 %></p>
+                  <p class="metric-detail"><%= tr(@lang, "Active sessions", "活跃会话") %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Retrying", "重试中") %></p>
+                  <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "retrying") || 0 %></p>
+                  <p class="metric-detail"><%= tr(@lang, "Backoff queue", "退避队列") %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Total tokens", "总 token") %></p>
+                  <p class="metric-value numeric"><%= format_int(field(field(@runtime_payload, "codex_totals"), "total_tokens")) %></p>
+                  <p class="metric-detail"><%= tr(@lang, "All active + completed runs", "活跃与已完成运行总计") %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Runtime", "运行时长") %></p>
+                  <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@runtime_payload, @now)) %></p>
+                  <p class="metric-detail"><%= tr(@lang, "Accumulated runtime", "累计运行时长") %></p>
+                </article>
+              </section>
+
+              <section class="sidebar-runtime-lanes">
+                <article class="runtime-lane">
+                  <div class="runtime-lane-head">
+                    <div>
+                      <h3 class="section-subtitle"><%= tr(@lang, "Running sessions", "运行会话") %></h3>
+                      <p class="section-copy"><%= tr(@lang, "What is executing right now.", "当前正在执行的议题。") %></p>
+                    </div>
+                    <span class="state-badge"><%= length(normalized_runtime_entries(field(@runtime_payload, "running"))) %></span>
+                  </div>
+                  <%= if normalized_runtime_entries(field(@runtime_payload, "running")) == [] do %>
+                    <p class="empty-state"><%= tr(@lang, "No active sessions.", "当前没有活跃会话。") %></p>
+                  <% else %>
+                    <div class="runtime-lane-list">
+                      <article :for={entry <- normalized_runtime_entries(field(@runtime_payload, "running"))} class="runtime-lane-item">
+                        <button type="button" class="issue-link issue-button run-ledger-issue" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
+                          <%= field(entry, "issue_identifier") %>
+                        </button>
+                        <span class={state_badge_class(field(entry, "state"))}><%= field(entry, "state") || tr(@lang, "n/a", "未提供") %></span>
+                        <p class="runtime-lane-meta"><%= field(entry, "last_event") || tr(@lang, "n/a", "未提供") %></p>
+                      </article>
+                    </div>
+                  <% end %>
+                </article>
+
+                <article class="runtime-lane">
+                  <div class="runtime-lane-head">
+                    <div>
+                      <h3 class="section-subtitle"><%= tr(@lang, "Retry queue", "重试队列") %></h3>
+                      <p class="section-copy"><%= tr(@lang, "What will be retried next.", "接下来会重试的议题。") %></p>
+                    </div>
+                    <span class="state-badge"><%= length(normalized_runtime_entries(field(@runtime_payload, "retrying"))) %></span>
+                  </div>
+                  <%= if normalized_runtime_entries(field(@runtime_payload, "retrying")) == [] do %>
+                    <p class="empty-state"><%= tr(@lang, "No issues are currently backing off.", "当前没有议题在退避重试。") %></p>
+                  <% else %>
+                    <div class="runtime-lane-list">
+                      <article :for={entry <- normalized_runtime_entries(field(@runtime_payload, "retrying"))} class="runtime-lane-item">
+                        <button type="button" class="issue-link issue-button run-ledger-issue" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
+                          <%= field(entry, "issue_identifier") %>
+                        </button>
+                        <span class="state-badge state-badge-warning"><%= tr(@lang, "Retry", "重试") %></span>
+                        <p class="runtime-lane-meta mono"><%= field(entry, "due_at") || tr(@lang, "n/a", "未提供") %></p>
+                      </article>
+                    </div>
+                  <% end %>
+                </article>
+              </section>
+            <% end %>
+          </section>
+        </aside>
+
+        <main class="operator-main">
+          <section class="focus-ribbon">
+            <article class="ribbon-card">
+              <p class="metric-label"><%= tr(@lang, "Issue spotlight", "当前任务焦点") %></p>
+              <h3 class="ribbon-title mono"><%= spotlight_title(@status, @lang) %></h3>
+              <p class="ribbon-copy"><%= spotlight_summary(@status, @lang) %></p>
+            </article>
+
+            <article class="ribbon-card">
+              <p class="metric-label"><%= tr(@lang, "Operator feedback", "操作反馈") %></p>
+              <h3 class="ribbon-title"><%= operator_feedback_title(@action_feedback, @lang) %></h3>
+              <p class="ribbon-copy"><%= operator_feedback_copy(@action_feedback, @status, @lang) %></p>
+            </article>
+          </section>
+
+          <section class="section-card">
           <div class="section-header">
             <div>
               <h2 class="section-title"><%= tr(@lang, "Run detail", "运行详情") %></h2>
@@ -315,8 +565,42 @@ defmodule SymphonyElixirWeb.ConsoleLive do
           </div>
 
           <%= if is_nil(@status) do %>
-            <p class="empty-state"><%= tr(@lang, "Load an issue to inspect current status, checks, and actions.", "先加载一个议题，才能查看当前状态、检查结果和控制动作。") %></p>
+            <div class="empty-stage radar-bg">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" class="empty-stage-icon">
+                <circle cx="12" cy="12" r="10"></circle>
+                <line x1="12" y1="2" x2="12" y2="22"></line>
+                <line x1="2" y1="12" x2="22" y2="12"></line>
+              </svg>
+              <div class="empty-stage-content">
+                <p class="empty-state empty-state-strong"><%= tr(@lang, "Awaiting telemetry.", "等待遥测信号。") %></p>
+                <p class="section-copy"><%= tr(@lang, "Select an issue from the left sidebar to establish a live connection to the execution stage.", "从左侧选择议题，以建立与执行主舞台的实时连接。") %></p>
+              </div>
+            </div>
           <% else %>
+            <section class="mission-strip">
+              <div class="section-header section-header-tight">
+                <div>
+                  <h3 class="section-subtitle"><%= tr(@lang, "Mission progress", "任务进度") %></h3>
+                  <p class="section-copy"><%= tr(@lang, "Watch the selected issue move from queue to delivery without leaving the cockpit.", "在控制台里直接观察当前议题从排队到交付的推进。") %></p>
+                </div>
+              </div>
+              <div class="progress-track">
+                <article :for={step <- phase_progress_steps(@status, @lang)} class={phase_step_class(step.state)}>
+                  <div class="progress-dot"></div>
+                  <div class="progress-content">
+                    <p class="progress-title"><%= step.title %></p>
+                    <p class="progress-copy"><%= step.copy %></p>
+                    <div :if={step.badge} class="progress-badge-row">
+                      <a :if={step.url} class="status-badge status-badge-link" href={step.url} target="_blank" rel="noreferrer">
+                        <%= step.badge %>
+                      </a>
+                      <span :if={!step.url} class="status-badge status-badge-embedded"><%= step.badge %></span>
+                    </div>
+                  </div>
+                </article>
+              </div>
+            </section>
+
             <div class="detail-grid">
               <article class="metric-card">
                 <p class="metric-label"><%= tr(@lang, "Issue", "议题") %></p>
@@ -347,92 +631,126 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 <p class="metric-value"><%= runtime_label(field(@status, "runtime_control"), @lang) %></p>
                 <p class="metric-detail"><%= runtime_reason(field(@status, "runtime_control"), @lang) %></p>
               </article>
+
+              <article class="metric-card">
+                <p class="metric-label"><%= tr(@lang, "Issue control", "议题控制") %></p>
+                <p class="metric-value"><%= issue_control_label(field(@status, "issue_control"), @lang) %></p>
+                <p class="metric-detail"><%= issue_control_reason(field(@status, "issue_control"), @lang) %></p>
+              </article>
+
+              <article class="metric-card">
+                <p class="metric-label"><%= tr(@lang, "Live session", "实时会话") %></p>
+                <p class="metric-value mono"><%= runtime_issue_label(field(@status, "runtime_issue"), @lang) %></p>
+                <p class="metric-detail"><%= runtime_issue_detail(field(@status, "runtime_issue"), @lang) %></p>
+              </article>
+
+              <article class="metric-card">
+                <p class="metric-label"><%= tr(@lang, "Operator instruction", "操作指令") %></p>
+                <p class="metric-value"><%= operator_instruction_label(@status, @lang) %></p>
+                <p class="metric-detail"><%= operator_instruction_detail(@status, @lang) %></p>
+              </article>
             </div>
 
-            <div class="section-stack">
-              <section>
-                <h3 class="section-subtitle"><%= tr(@lang, "Checks", "检查项") %></h3>
-                <div class="table-wrap">
-                  <table class="data-table">
-                    <thead>
-                      <tr>
-                        <th><%= tr(@lang, "Check", "检查项") %></th>
-                        <th><%= tr(@lang, "Status", "状态") %></th>
-                        <th><%= tr(@lang, "Summary", "摘要") %></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr :for={{name, payload} <- normalized_checks(field(@status, "checks"))}>
-                        <td><%= name %></td>
-                        <td><span class={state_badge_class(field(payload, "status"))}><%= field(payload, "status") || tr(@lang, "n/a", "未提供") %></span></td>
-                        <td><%= field(payload, "summary") || tr(@lang, "n/a", "未提供") %></td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-
-              <section>
-                <h3 class="section-subtitle"><%= tr(@lang, "Timeline", "事件时间线") %></h3>
-                <%= if normalized_events(field(@status, "latest_events")) == [] do %>
-                  <p class="empty-state"><%= tr(@lang, "No events returned.", "当前没有返回事件。") %></p>
-                <% else %>
-                  <div class="timeline-list">
-                    <article :for={event <- normalized_events(field(@status, "latest_events"))} class="timeline-item">
-                      <div class="timeline-head">
-                        <span class={state_badge_class(field(event, "type"))}><%= humanize_token(field(event, "type"), @lang) || tr(@lang, "n/a", "未提供") %></span>
-                        <span class="timeline-time mono"><%= field(event, "ts") || tr(@lang, "n/a", "未提供") %></span>
+            <section class={command_deck_class(@action_feedback)}>
+              <div class="command-deck-grid">
+                <div class="command-deck-main">
+                  <h3 class="section-subtitle"><%= tr(@lang, "Operator command", "操作指令") %></h3>
+                  <article class={guidance_callout_class(@status)}>
+                    <p class="guidance-eyebrow"><%= tr(@lang, "What the cockpit suggests next", "控制台建议的下一步") %></p>
+                    <p class="guidance-copy"><%= action_guidance(@status, @lang) %></p>
+                  </article>
+                  <div class="feedback-slot">
+                    <%= if @action_feedback do %>
+                      <div class={action_feedback_class(@action_feedback)}>
+                        <span class="feedback-icon"><%= action_feedback_icon(@action_feedback, @lang) %></span>
+                        <strong><%= field(@action_feedback, "label") %></strong>
+                        <span><%= field(@action_feedback, "message") %></span>
+                        <span :if={field(@action_feedback, "at")} class="mono"><%= field(@action_feedback, "at") %></span>
                       </div>
-                      <p class="timeline-summary"><%= field(event, "summary") || tr(@lang, "n/a", "未提供") %></p>
-                      <p :if={present?(field(event, "actor"))} class="timeline-meta">
-                        <%= tr(@lang, "Actor", "执行方") %>：<span class="mono"><%= field(event, "actor") %></span>
-                      </p>
-                    </article>
+                    <% end %>
                   </div>
-                <% end %>
-              </section>
+                  <form id="instruction-form" class="instruction-form" phx-submit="instruction_action">
+                    <label class="toolbar-field toolbar-field-full">
+                      <span><%= tr(@lang, "Operator instruction", "操作指令") %></span>
+                      <textarea
+                        class="form-input form-textarea"
+                        name="message"
+                        placeholder={instruction_placeholder(@profiles, @selected_profile, @lang)}
+                      ><%= @instruction_message %></textarea>
+                    </label>
 
-              <section>
-                <h3 class="section-subtitle"><%= tr(@lang, "Actions", "控制动作") %></h3>
-                <div class="action-row">
-                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause"><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
-                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume"><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
+                    <label class="checkbox-field">
+                      <input type="checkbox" name="sync_linear" value="true" checked={@sync_linear} />
+                      <span><%= tr(@lang, "Sync to Linear", "同步到 Linear") %></span>
+                    </label>
+
+                    <div class="action-row action-row-primary">
+                      <button type="submit" name="intent" value="steer" class="subtle-button subtle-button-primary" disabled={action_disabled?(@status, "steer")} phx-disable-with={tr(@lang, "Steering...", "引导中...")}><%= tr(@lang, "Steer run", "引导运行") %></button>
+                      <button type="submit" name="intent" value="append" class="subtle-button" disabled={action_disabled?(@status, "instruction")} phx-disable-with={tr(@lang, "Queueing...", "排队中...")}><%= tr(@lang, "Queue instruction", "排队指令") %></button>
+                    </div>
+                  </form>
                 </div>
 
-                <form id="instruction-form" class="instruction-form" phx-submit="append_instruction">
-                  <label class="toolbar-field toolbar-field-full">
-                    <span><%= tr(@lang, "Append instruction", "补充指令") %></span>
-                    <textarea
-                      class="form-input form-textarea"
-                      name="message"
-                      placeholder={tr(@lang, "Add a new instruction for this run", "为当前运行补充新的执行指令")}
-                    ><%= @instruction_message %></textarea>
-                  </label>
+                <div class="command-deck-side">
+                  <h4 class="guidance-eyebrow"><%= tr(@lang, "Run controls", "运行控制") %></h4>
+                  <div class="action-row action-row-secondary">
+                    <button id="pause-run" type="button" class="subtle-button" phx-click="pause" disabled={action_disabled?(@status, "pause")} phx-disable-with={tr(@lang, "Pausing...", "暂停中...")}><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
+                    <button id="resume-run" type="button" class="subtle-button" phx-click="resume" disabled={action_disabled?(@status, "resume")} phx-disable-with={tr(@lang, "Resuming...", "恢复中...")}><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
+                    <button id="restart-run" type="button" class="subtle-button" phx-click="restart" disabled={action_disabled?(@status, "restart")} phx-disable-with={tr(@lang, "Restarting...", "重启中...")}><%= tr(@lang, "Restart run", "重启运行") %></button>
+                    <button id="cancel-run" type="button" class="subtle-button subtle-button-danger" phx-click="cancel" disabled={action_disabled?(@status, "cancel")} phx-disable-with={tr(@lang, "Cancelling...", "取消中...")}><%= tr(@lang, "Cancel current run", "取消当前运行") %></button>
+                    <button id="hold-run" type="button" class="subtle-button" phx-click="hold" disabled={action_disabled?(@status, "hold")} phx-disable-with={tr(@lang, "Holding...", "挂起中...")}><%= tr(@lang, "Hold issue", "挂起议题") %></button>
+                    <button id="release-run" type="button" class="subtle-button" phx-click="release" disabled={action_disabled?(@status, "release")} phx-disable-with={tr(@lang, "Releasing...", "解除中...")}><%= tr(@lang, "Release hold", "解除挂起") %></button>
+                    <button id="clear-instruction" type="button" class="subtle-button" phx-click="clear_instruction" disabled={action_disabled?(@status, "clear_instruction")} phx-disable-with={tr(@lang, "Clearing...", "清除中...")}><%= tr(@lang, "Clear instruction", "清除指令") %></button>
+                  </div>
+                  <p class="section-copy action-copy">
+                    <%= tr(@lang, "Queue instruction stores operator intent for the next restart. Steer run stores it and requests the restart path immediately.", "排队指令会把操作员意图留给下一次重启应用；引导运行会同时落下这条指令并立即请求重启路径。") %>
+                  </p>
+                </div>
+              </div>
+            </section>
 
-                  <label class="checkbox-field">
-                    <input type="checkbox" name="sync_linear" value="true" checked={@sync_linear} />
-                    <span><%= tr(@lang, "Sync to Linear", "同步到 Linear") %></span>
-                  </label>
-
-                  <button type="submit" class="subtle-button subtle-button-primary"><%= tr(@lang, "Append instruction", "追加指令") %></button>
-                </form>
+            <div class="execution-stage-grid">
+              <section class="section-card">
+                <div class="section-stack">
+                  <section>
+                    <h3 class="section-subtitle"><%= tr(@lang, "Checks", "检查项") %></h3>
+                    <div class="table-wrap">
+                      <table class="data-table">
+                        <thead>
+                          <tr>
+                            <th><%= tr(@lang, "Check", "检查项") %></th>
+                            <th><%= tr(@lang, "Status", "状态") %></th>
+                            <th><%= tr(@lang, "Summary", "摘要") %></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr :for={{name, payload} <- normalized_checks(field(@status, "checks"))}>
+                            <td><%= name %></td>
+                            <td><span class={state_badge_class(field(payload, "status"))}><%= field(payload, "status") || tr(@lang, "n/a", "未提供") %></span></td>
+                            <td><%= field(payload, "summary") || tr(@lang, "n/a", "未提供") %></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
+                </div>
               </section>
 
-              <section>
+              <section class="section-card detail-terminal-card">
                 <div class="section-header section-header-tight">
                   <div>
-                    <h3 class="section-subtitle"><%= tr(@lang, "Inspector", "数据面板") %></h3>
+                    <h3 class="section-subtitle"><%= tr(@lang, "Inspector terminal", "终端面板") %></h3>
                     <p class="section-copy"><%= tr(@lang, "Switch between workpad context, doctor output, and split log streams.", "在 workpad、doctor 输出和拆分日志流之间切换。") %></p>
                   </div>
                 </div>
 
-                <div class="panel-tab-row">
+                <div class="panel-tab-row panel-tab-row-terminal">
                   <button type="button" class={panel_button_class(@detail_panel, "workpad")} phx-click="set_detail_panel" phx-value-panel="workpad"><%= tr(@lang, "Workpad", "Workpad") %></button>
                   <button type="button" class={panel_button_class(@detail_panel, "doctor")} phx-click="set_detail_panel" phx-value-panel="doctor"><%= tr(@lang, "Doctor", "Doctor") %></button>
                   <button type="button" class={panel_button_class(@detail_panel, "logs")} phx-click="set_detail_panel" phx-value-panel="logs"><%= tr(@lang, "Logs", "日志流") %></button>
                 </div>
 
-                <div :if={@detail_panel == "workpad"} class="inspector-stack">
+                <div :if={@detail_panel == "workpad"} class="inspector-stack inspector-stack-terminal">
                   <%= if workpad_sections(field(@status, "workpad")) == [] do %>
                     <p class="empty-state"><%= tr(@lang, "No workpad data returned.", "当前没有返回 workpad 数据。") %></p>
                   <% else %>
@@ -445,7 +763,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                   <% end %>
                 </div>
 
-                <div :if={@detail_panel == "doctor"} class="inspector-stack">
+                <div :if={@detail_panel == "doctor"} class="inspector-stack inspector-stack-terminal">
                   <%= if doctor_rows(field(@status, "doctor")) == [] do %>
                     <p class="empty-state"><%= tr(@lang, "No doctor output returned.", "当前没有返回 doctor 输出。") %></p>
                   <% else %>
@@ -470,31 +788,105 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                   <% end %>
                 </div>
 
-                <div :if={@detail_panel == "logs"} class="inspector-stack">
-                  <%= if log_streams(field(@status, "logs")) == [] do %>
+                <div :if={@detail_panel == "logs"} class="inspector-stack inspector-stack-terminal">
+                  <%= if not has_console_streams?(@status) do %>
                     <p class="empty-state"><%= tr(@lang, "No logs returned. Reload the issue with agent or raw logs enabled.", "当前没有返回日志。请重新加载议题并启用执行日志或原始日志。") %></p>
                   <% else %>
-                    <div class="panel-tab-row">
-                      <button
-                        :for={stream <- log_streams(field(@status, "logs"))}
-                        type="button"
-                        class={panel_button_class(active_log_stream(@status, @active_log_stream), stream.id)}
-                        phx-click="set_log_stream"
-                        phx-value-stream={stream.id}
-                      ><%= stream.label %></button>
+                    <div class="stream-grid stream-grid-terminal">
+                      <article class="inspector-card stream-card">
+                        <div class="inspector-card-head">
+                          <h4><%= tr(@lang, "Agent stream", "执行流") %></h4>
+                        </div>
+                        <%= if content = agent_log_content(field(@status, "logs")) do %>
+                          <pre class={"code-panel #{if runtime_scope(@status) == "running", do: "code-panel-live", else: ""}"}><%= content %></pre>
+                        <% else %>
+                          <p class="empty-state"><%= tr(@lang, "No agent log returned.", "当前没有返回执行日志。") %></p>
+                        <% end %>
+                      </article>
+
+                      <article class="inspector-card stream-card">
+                        <div class="inspector-card-head">
+                          <h4><%= tr(@lang, "Decision stream", "决策流") %></h4>
+                        </div>
+                        <%= if content = decision_log_content(field(@status, "latest_events")) do %>
+                          <pre class="code-panel"><%= content %></pre>
+                        <% else %>
+                          <p class="empty-state"><%= tr(@lang, "No decision events returned.", "当前没有返回决策事件。") %></p>
+                        <% end %>
+                      </article>
+
+                      <article class="inspector-card stream-card">
+                        <div class="inspector-card-head">
+                          <h4><%= tr(@lang, "Raw stream", "原始流") %></h4>
+                        </div>
+                        <%= if raw_log_streams(field(@status, "logs")) == [] do %>
+                          <p class="empty-state"><%= tr(@lang, "No raw log returned.", "当前没有返回原始日志。") %></p>
+                        <% else %>
+                          <div :if={length(raw_log_streams(field(@status, "logs"))) > 1} class="panel-tab-row panel-tab-row-terminal">
+                            <button
+                              :for={stream <- raw_log_streams(field(@status, "logs"))}
+                              type="button"
+                              class={panel_button_class(active_raw_log_stream(@status, @active_log_stream), stream.id)}
+                              phx-click="set_log_stream"
+                              phx-value-stream={stream.id}
+                            ><%= stream.label %></button>
+                          </div>
+                          <article :if={selected_stream = selected_raw_log_stream(field(@status, "logs"), @active_log_stream)} class="stream-inner-card">
+                            <div class="inspector-card-head">
+                              <h4><%= selected_stream.label %></h4>
+                            </div>
+                            <pre class="code-panel"><%= selected_stream.content %></pre>
+                          </article>
+                        <% end %>
+                      </article>
                     </div>
-                    <article :if={selected_stream = selected_log_stream(field(@status, "logs"), @active_log_stream)} class="inspector-card">
-                      <div class="inspector-card-head">
-                        <h4><%= selected_stream.label %></h4>
-                      </div>
-                      <pre class="code-panel"><%= selected_stream.content %></pre>
-                    </article>
                   <% end %>
                 </div>
               </section>
             </div>
+
+            <div class="execution-timeline-grid">
+              <section class="section-card">
+                <h3 class="section-subtitle"><%= tr(@lang, "Timeline", "事件时间线") %></h3>
+                <%= if normalized_events(field(@status, "latest_events")) == [] do %>
+                  <p class="empty-state"><%= tr(@lang, "No events returned.", "当前没有返回事件。") %></p>
+                <% else %>
+                  <div class="timeline-list">
+                    <article :for={event <- normalized_events(field(@status, "latest_events"))} class="timeline-item">
+                      <div class="timeline-head">
+                        <span class={state_badge_class(field(event, "type"))}><%= humanize_token(field(event, "type"), @lang) || tr(@lang, "n/a", "未提供") %></span>
+                        <span class="timeline-time mono"><%= field(event, "ts") || tr(@lang, "n/a", "未提供") %></span>
+                      </div>
+                      <p class="timeline-summary"><%= field(event, "summary") || tr(@lang, "n/a", "未提供") %></p>
+                      <p :if={present?(field(event, "actor"))} class="timeline-meta">
+                        <%= tr(@lang, "Actor", "执行方") %>：<span class="mono"><%= field(event, "actor") %></span>
+                      </p>
+                    </article>
+                  </div>
+                <% end %>
+              </section>
+
+              <section class="section-card">
+                <h3 class="section-subtitle"><%= tr(@lang, "Instruction history", "指令历史") %></h3>
+                <%= if instruction_history(field(@status, "operator_instruction_history")) == [] do %>
+                  <p class="empty-state"><%= tr(@lang, "No completed instruction transitions yet.", "当前还没有已完成的指令状态迁移。") %></p>
+                <% else %>
+                  <div class="timeline-list">
+                    <article :for={instruction <- instruction_history(field(@status, "operator_instruction_history"))} class="timeline-item">
+                      <div class="timeline-head">
+                        <span class={state_badge_class(field(instruction, "delivery_state"))}><%= instruction_state_text(instruction, @lang) %></span>
+                        <span class="timeline-time mono"><%= instruction_state_timestamp(instruction) || tr(@lang, "n/a", "未提供") %></span>
+                      </div>
+                      <p class="timeline-summary"><%= field(instruction, "message") || tr(@lang, "n/a", "未提供") %></p>
+                      <p class="timeline-meta"><%= instruction_history_meta(instruction, @lang) %></p>
+                    </article>
+                  </div>
+                <% end %>
+              </section>
+            </div>
           <% end %>
-        </section>
+          </section>
+        </main>
       </div>
     </section>
     """
@@ -502,17 +894,22 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp refresh_console(socket, opts) do
     socket =
-      case client_module().meta() do
+      case client_meta(socket.assigns.selected_adapter) do
         {:ok, meta} ->
           events_limit = socket.assigns.events_limit || field(meta, "default_event_limit") || 10
-          assign(socket, :meta, meta) |> assign(:events_limit, events_limit) |> assign(:error_message, nil)
+
+          socket
+          |> assign(:meta, meta)
+          |> assign(:events_limit, events_limit)
+          |> assign(:error_message, nil)
+          |> reconcile_profile_assigns(meta)
 
         {:error, reason} ->
           assign(socket, :error_message, error_message(socket.assigns.lang, reason))
       end
 
     socket =
-      case client_module().list_runs(12) do
+      case client_list_runs(12, socket.assigns.selected_adapter) do
         {:ok, runs} -> assign(socket, :runs, runs)
         {:error, reason} -> assign(socket, :error_message, error_message(socket.assigns.lang, reason))
       end
@@ -533,11 +930,11 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       workpad: socket.assigns.include_workpad
     }
 
-    case client_module().get_status(socket.assigns.selected_issue, opts) do
+    case client_get_status(socket.assigns.selected_issue, opts, socket.assigns.selected_adapter) do
       {:ok, status} ->
         socket
         |> assign(:status, status)
-        |> assign(:active_log_stream, default_log_stream_id(field(status, "logs")))
+        |> assign(:active_log_stream, default_raw_log_stream_id(field(status, "logs")))
         |> assign(:error_message, nil)
 
       {:error, reason} ->
@@ -556,6 +953,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       %{
         issue: socket.assigns.selected_issue,
         action: params["action"],
+        profile: socket.assigns.selected_profile,
         branch: blank_to_nil(socket.assigns.branch_override),
         message: blank_to_nil(params["message"]),
         syncLinear: params["sync_linear"]
@@ -563,24 +961,216 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       |> Enum.reject(fn {_key, value} -> is_nil(value) end)
       |> Map.new()
 
-    case client_module().create_action(payload) do
+    case client_create_action(payload, socket.assigns.selected_adapter) do
       {:ok, response} ->
         socket
         |> assign(:status, field(response, "status") || socket.assigns.status)
+        |> assign(:action_feedback, %{
+          "kind" => "success",
+          "label" => tr(socket.assigns.lang, "Action applied", "动作已执行"),
+          "message" => action_success_message(socket.assigns.lang, params["action"]),
+          "at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        })
         |> put_flash(:info, action_success_message(socket.assigns.lang, params["action"]))
         |> refresh_console(load_status?: true)
 
       {:error, reason} ->
-        put_flash(socket, :error, error_message(socket.assigns.lang, reason))
+        socket
+        |> assign(:action_feedback, %{
+          "kind" => "error",
+          "label" => tr(socket.assigns.lang, "Action failed", "动作失败"),
+          "message" => error_message(socket.assigns.lang, reason),
+          "at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        })
+        |> put_flash(:error, error_message(socket.assigns.lang, reason))
     end
   end
 
   defp client_module do
-    Application.get_env(:symphony_elixir, :console_client_module, SymphonyElixir.ConsoleClient)
+    module = Application.get_env(:symphony_elixir, :console_client_module, SymphonyElixir.ConsoleClient)
+    if is_atom(module), do: Code.ensure_loaded(module)
+    module
+  end
+
+  defp adapter_options do
+    module = client_module()
+
+    if function_exported?(module, :list_adapters, 0) do
+      module.list_adapters()
+    else
+      []
+    end
+  end
+
+  defp default_adapter_id([first | _rest]), do: first.id
+  defp default_adapter_id([]), do: nil
+
+  defp selected_adapter_id([], _requested), do: nil
+  defp selected_adapter_id(adapters, requested) when requested in [nil, ""], do: default_adapter_id(adapters)
+
+  defp selected_adapter_id(adapters, requested) do
+    if Enum.any?(adapters, &(&1.id == requested)) do
+      requested
+    else
+      default_adapter_id(adapters)
+    end
+  end
+
+  defp client_meta(adapter_id) do
+    module = client_module()
+
+    cond do
+      function_exported?(module, :meta, 1) -> module.meta(adapter_id)
+      function_exported?(module, :meta, 0) -> module.meta()
+      true -> {:error, :not_configured}
+    end
+  end
+
+  defp client_list_runs(limit, adapter_id) do
+    module = client_module()
+
+    cond do
+      function_exported?(module, :list_runs, 2) -> module.list_runs(limit, adapter_id)
+      function_exported?(module, :list_runs, 1) -> module.list_runs(limit)
+      function_exported?(module, :list_runs, 0) -> module.list_runs()
+      true -> {:error, :not_configured}
+    end
+  end
+
+  defp client_get_status(issue_identifier, opts, adapter_id) do
+    module = client_module()
+
+    cond do
+      function_exported?(module, :get_status, 3) -> module.get_status(issue_identifier, opts, adapter_id)
+      function_exported?(module, :get_status, 2) -> module.get_status(issue_identifier, opts)
+      true -> {:error, :not_configured}
+    end
+  end
+
+  defp client_create_action(payload, adapter_id) do
+    module = client_module()
+
+    cond do
+      function_exported?(module, :create_action, 2) -> module.create_action(payload, adapter_id)
+      function_exported?(module, :create_action, 1) -> module.create_action(payload)
+      true -> {:error, :not_configured}
+    end
   end
 
   defp adapter_label(nil), do: "Project"
   defp adapter_label(meta), do: field(meta, "repo_name") || field(meta, "repo_key") || "Project"
+
+  defp reconcile_profile_assigns(socket, meta) do
+    previous_selected_profile = socket.assigns.selected_profile
+    profiles = profile_options(meta)
+    selected_profile = selected_profile_id(profiles, socket.assigns.selected_profile, default_profile_id(meta, profiles))
+
+    socket =
+      socket
+      |> assign(:profiles, profiles)
+      |> assign(:selected_profile, selected_profile)
+
+    if selected_profile != socket.assigns.profile_defaults_for or previous_selected_profile != selected_profile do
+      apply_profile_defaults(socket, selected_profile(profiles, selected_profile))
+    else
+      socket
+    end
+  end
+
+  defp profile_options(meta) when is_map(meta) do
+    case field(meta, "profiles") do
+      profiles when is_list(profiles) -> Enum.filter(profiles, &present?(profile_id(&1)))
+      _ -> []
+    end
+  end
+
+  defp profile_options(_meta), do: []
+
+  defp default_profile_id(meta, profiles) do
+    requested = blank_to_nil(field(meta, "default_profile"))
+
+    if requested && Enum.any?(profiles, &(profile_id(&1) == requested)) do
+      requested
+    else
+      case profiles do
+        [first | _rest] -> profile_id(first)
+        [] -> nil
+      end
+    end
+  end
+
+  defp selected_profile_id([], _requested, _default_id), do: nil
+  defp selected_profile_id(profiles, requested, default_id) when requested in [nil, ""], do: default_id || profile_id(hd(profiles))
+
+  defp selected_profile_id(profiles, requested, default_id) do
+    if Enum.any?(profiles, &(profile_id(&1) == requested)) do
+      requested
+    else
+      default_id || profile_id(hd(profiles))
+    end
+  end
+
+  defp selected_profile(profiles, selected_id) when is_list(profiles) do
+    Enum.find(profiles, &(profile_id(&1) == selected_id))
+  end
+
+  defp apply_profile_defaults(socket, nil), do: socket
+
+  defp apply_profile_defaults(socket, profile) do
+    defaults = field(profile, "defaults")
+    template = localized_field(profile, "instructionTemplate", socket.assigns.lang)
+    profile_id = profile_id(profile)
+
+    socket
+    |> maybe_assign(:events_limit, profile_default(defaults, "events", socket.assigns.events_limit))
+    |> maybe_assign(:include_logs, profile_default(defaults, "includeLogs", socket.assigns.include_logs))
+    |> maybe_assign(:include_doctor, profile_default(defaults, "includeDoctor", socket.assigns.include_doctor))
+    |> maybe_assign(:include_workpad, profile_default(defaults, "includeWorkpad", socket.assigns.include_workpad))
+    |> maybe_assign(:sync_linear, profile_default(defaults, "syncLinear", socket.assigns.sync_linear))
+    |> maybe_assign(
+      :instruction_message,
+      if(blank_to_nil(socket.assigns.instruction_message),
+        do: socket.assigns.instruction_message,
+        else: template
+      )
+    )
+    |> assign(:profile_defaults_for, profile_id)
+  end
+
+  defp profile_default(defaults, key, fallback) when is_map(defaults) do
+    case field(defaults, key) do
+      nil -> fallback
+      value -> value
+    end
+  end
+
+  defp profile_default(_defaults, _key, fallback), do: fallback
+
+  defp maybe_assign(socket, _key, nil), do: socket
+  defp maybe_assign(socket, key, value), do: assign(socket, key, value)
+
+  defp profile_id(profile), do: blank_to_nil(field(profile, "id"))
+  defp profile_label(profile, lang), do: localized_field(profile, "label", lang) || profile_id(profile) || "Profile"
+  defp profile_description(profile, lang), do: localized_field(profile, "description", lang) || tr(lang, "No profile description.", "当前没有模板说明。")
+
+  defp instruction_placeholder(profiles, selected_id, lang) do
+    case selected_profile(profiles, selected_id) do
+      nil ->
+        tr(lang, "Add a new instruction for this run", "为当前运行补充新的执行指令")
+
+      profile ->
+        localized_field(profile, "instructionTemplate", lang) ||
+          tr(lang, "Add a new instruction for this run", "为当前运行补充新的执行指令")
+    end
+  end
+
+  defp localized_field(profile, key, lang) do
+    case field(profile, key) do
+      text when is_binary(text) -> blank_to_nil(text)
+      localized when is_map(localized) -> blank_to_nil(field(localized, lang) || field(localized, "zh") || field(localized, "en"))
+      _ -> nil
+    end
+  end
 
   defp refresh_selected?(value, refresh_interval_ms) do
     selected =
@@ -593,10 +1183,279 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     value == selected
   end
 
+  defp normalized_runtime_entries(nil), do: []
+  defp normalized_runtime_entries(entries) when is_list(entries), do: entries
+  defp normalized_runtime_entries(_entries), do: []
+
+  defp runtime_error_message(%{"message" => message, "code" => code}, "en"),
+    do: "#{message} (#{code})"
+
+  defp runtime_error_message(%{"message" => message, "code" => code}, _lang),
+    do: "#{message}（#{code}）"
+
+  defp runtime_error_message(message, _lang) when is_binary(message), do: message
+
+  defp runtime_error_message(_error, "en"), do: "Runtime snapshot unavailable"
+  defp runtime_error_message(_error, _lang), do: "运行态快照不可用"
+
   defp action_success_message(lang, "pause"), do: tr(lang, "Pause recorded", "已记录暂停请求")
   defp action_success_message(lang, "resume"), do: tr(lang, "Continue recorded", "已记录继续请求")
-  defp action_success_message(lang, "instruction"), do: tr(lang, "Instruction appended", "已追加指令")
+  defp action_success_message(lang, "cancel"), do: tr(lang, "Current run cancelled", "已取消当前运行")
+  defp action_success_message(lang, "hold"), do: tr(lang, "Issue hold applied", "已挂起议题")
+  defp action_success_message(lang, "release"), do: tr(lang, "Issue hold released", "已解除挂起")
+  defp action_success_message(lang, "restart"), do: tr(lang, "Restart scheduled", "已安排重启")
+  defp action_success_message(lang, "clear_instruction"), do: tr(lang, "Pending instruction cleared", "已清除待生效指令")
+  defp action_success_message(lang, "instruction"), do: tr(lang, "Instruction queued for the next restart", "已将指令排队，等待下次重启应用")
+  defp action_success_message(lang, "steer"), do: tr(lang, "Instruction queued and restart requested", "已排队指令，并请求重启应用")
   defp action_success_message(lang, _action), do: tr(lang, "Action recorded", "已记录动作")
+
+  defp action_feedback_class(nil), do: "action-feedback"
+
+  defp action_feedback_class(feedback) when is_map(feedback) do
+    case field(feedback, "kind") do
+      "error" -> "action-feedback action-feedback-error"
+      _ -> "action-feedback action-feedback-success"
+    end
+  end
+
+  defp action_feedback_icon(feedback, "en") do
+    case field(feedback, "kind") do
+      "error" -> "Error"
+      _ -> "Done"
+    end
+  end
+
+  defp action_feedback_icon(feedback, _lang) do
+    case field(feedback, "kind") do
+      "error" -> "失败"
+      _ -> "完成"
+    end
+  end
+
+  defp heartbeat_label(now, "en"), do: "Heartbeat #{Calendar.strftime(now, "%H:%M:%S")}"
+  defp heartbeat_label(now, _lang), do: "心跳 #{Calendar.strftime(now, "%H:%M:%S")}"
+
+  defp heartbeat_copy(payload, lang) do
+    running = field(field(payload, "counts"), "running") || 0
+    retrying = field(field(payload, "counts"), "retrying") || 0
+
+    if running > 0 do
+      tr(lang, "#{running} active issue sessions are streaming live right now.", "当前有 #{running} 个议题会话正在实时运行。")
+    else
+      tr(lang, "No active issue session is streaming right now.", "当前没有议题会话正在实时运行。")
+    end <>
+      " " <>
+      tr(lang, "#{retrying} issues are queued for retry.", "#{retrying} 个议题正在等待重试。")
+  end
+
+  defp spotlight_title(nil, lang),
+    do: tr(lang, "Load an issue to focus the cockpit", "加载一个议题，让操作台聚焦到当前任务")
+
+  defp spotlight_title(status, _lang), do: field(status, "issue") || "n/a"
+
+  defp spotlight_summary(nil, lang),
+    do: tr(lang, "The cockpit will surface live runtime state, operator controls, and delivery progress once an issue is selected.", "选中议题后，这里会显示实时运行态、控制动作和交付进度。")
+
+  defp spotlight_summary(status, lang) do
+    summary = field(status, "summary") || tr(lang, "No summary returned.", "当前没有返回摘要。")
+    phase = field(status, "phase") || tr(lang, "n/a", "未提供")
+    route = field(status, "route_hint") || tr(lang, "n/a", "未提供")
+    "#{summary} " <> tr(lang, "Phase", "阶段") <> ": #{phase} · " <> tr(lang, "Route", "路由") <> ": #{route}"
+  end
+
+  defp operator_feedback_title(nil, lang),
+    do: tr(lang, "No operator action yet", "当前没有新的操作反馈")
+
+  defp operator_feedback_title(feedback, _lang), do: field(feedback, "label") || "n/a"
+
+  defp operator_feedback_copy(nil, status, lang) do
+    operator_instruction_detail(status, lang)
+  end
+
+  defp operator_feedback_copy(feedback, _status, _lang), do: field(feedback, "message") || "n/a"
+
+  defp phase_progress_steps(status, lang) do
+    current_index = phase_progress_index(status)
+    delivery = field(status, "delivery")
+
+    [
+      %{
+        index: 1,
+        title: tr(lang, "Queue", "排队"),
+        copy: tr(lang, "Issue is discovered and waiting to be worked.", "议题已被发现，等待进入执行。"),
+        badge: nil,
+        url: nil
+      },
+      %{
+        index: 2,
+        title: tr(lang, "Build", "实现"),
+        copy: tr(lang, "Worker is changing code or preparing the workspace.", "执行器正在改代码或准备工作区。"),
+        badge: nil,
+        url: nil
+      },
+      %{
+        index: 3,
+        title: tr(lang, "Validate", "验证"),
+        copy: tr(lang, "Checks, CI, and runtime verification are in progress.", "本地检查、CI 和运行验证进行中。"),
+        badge: delivery_ci_badge(delivery, lang),
+        url: delivery_ci_url(delivery)
+      },
+      %{
+        index: 4,
+        title: tr(lang, "Review", "评审"),
+        copy: tr(lang, "Human review and operator feedback decide the next route.", "人工评审和操作员反馈决定下一步路由。"),
+        badge: delivery_pr_badge(delivery, lang),
+        url: delivery_pr_url(delivery)
+      },
+      %{
+        index: 5,
+        title: tr(lang, "Ship", "交付"),
+        copy: tr(lang, "Merge automation and completion state are converging.", "合并自动化和完成状态正在收口。"),
+        badge: delivery_ship_badge(delivery, lang),
+        url: nil
+      }
+    ]
+    |> Enum.map(fn step ->
+      state =
+        cond do
+          step.index < current_index -> "complete"
+          step.index == current_index -> "current"
+          true -> "upcoming"
+        end
+
+      Map.put(step, :state, state)
+    end)
+  end
+
+  defp phase_progress_index(nil), do: 1
+
+  defp phase_progress_index(status) do
+    phase = status |> field("phase") |> to_string() |> String.downcase()
+    route = status |> field("route_hint") |> to_string() |> String.downcase()
+    delivery = field(status, "delivery")
+    merged = field(field(delivery, "pull_request"), "merged") in [true, "true"]
+
+    cond do
+      merged or route == "done" -> 5
+      route in ["merging"] -> 5
+      route in ["human review"] or phase in ["handoff", "review"] -> 4
+      phase in ["validation"] or route in ["rework"] -> 3
+      phase in ["implementation", "sync"] -> 2
+      true -> 1
+    end
+  end
+
+  defp phase_step_class("complete"), do: "progress-step progress-step-complete"
+  defp phase_step_class("current"), do: "progress-step progress-step-current"
+  defp phase_step_class(_state), do: "progress-step progress-step-upcoming"
+
+  defp run_ledger_segments(run) do
+    current_index = phase_progress_index(run)
+
+    Enum.map(1..5, fn index ->
+      cond do
+        index < current_index -> "done"
+        index == current_index -> "active"
+        true -> "upcoming"
+      end
+    end)
+  end
+
+  defp run_ledger_segment_class("done"), do: "sparkline-segment sparkline-segment-done"
+  defp run_ledger_segment_class("active"), do: "sparkline-segment sparkline-segment-active"
+  defp run_ledger_segment_class(_state), do: "sparkline-segment"
+
+  defp guidance_callout_class(status) do
+    runtime_paused = field(field(status, "runtime_control"), "paused") in [true, "true"]
+    issue_held = field(field(status, "issue_control"), "held") in [true, "true"]
+    runtime_scope = runtime_scope(status)
+
+    cond do
+      runtime_paused or issue_held ->
+        "guidance-callout guidance-callout-warning"
+
+      runtime_scope in ["running", "retrying"] ->
+        "guidance-callout guidance-callout-active"
+
+      true ->
+        "guidance-callout guidance-callout-neutral"
+    end
+  end
+
+  defp command_deck_class(feedback) do
+    case field(feedback, "kind") do
+      "error" -> "command-deck command-deck-error"
+      "success" -> "command-deck command-deck-success"
+      _ -> "command-deck"
+    end
+  end
+
+  defp run_ledger_status(phase) do
+    phase_str = to_string(phase || "") |> String.downcase()
+
+    cond do
+      phase_str in ["validation", "sync", "implementation", "running", "rework"] -> "active"
+      phase_str in ["handoff", "review", "human review", "done", "merging"] -> "done"
+      true -> "neutral"
+    end
+  end
+
+  defp run_ledger_time(nil), do: ""
+
+  defp run_ledger_time(time) when is_binary(time) do
+    String.slice(time, 11..15) || time
+  end
+
+  defp delivery_ci_badge(delivery, lang) do
+    label =
+      case field(delivery_ci(delivery), "status") do
+        "success" -> tr(lang, "CI passing", "CI 通过")
+        "running" -> tr(lang, "CI running", "CI 运行中")
+        "failed" -> tr(lang, "CI failed", "CI 失败")
+        "blocked" -> tr(lang, "CI blocked", "CI 阻塞")
+        _ -> nil
+      end
+
+    label
+  end
+
+  defp delivery_pr_badge(delivery, lang) do
+    label =
+      case field(delivery_pull_request(delivery), "status") do
+        "merged" -> tr(lang, "PR merged", "PR 已合并")
+        "open" -> tr(lang, "PR open", "PR 已打开")
+        "created" -> tr(lang, "PR created", "PR 已创建")
+        "missing" -> tr(lang, "PR pending", "PR 待创建")
+        _ -> nil
+      end
+
+    label
+  end
+
+  defp delivery_ship_badge(delivery, lang) do
+    case field(delivery_automation(delivery), "status") do
+      "healthy" -> tr(lang, "Merge ready", "可合并")
+      "waiting" -> tr(lang, "Merge waiting", "等待合并")
+      "blocked" -> tr(lang, "Merge blocked", "合并阻塞")
+      _ -> delivery_route_label(delivery, lang)
+    end
+  end
+
+  defp meter_width_style(percent) when is_integer(percent),
+    do: "width: #{min(max(percent, 0), 100)}%;"
+
+  defp runtime_activity_percent(payload) do
+    running = field(field(payload, "counts"), "running") || 0
+    retrying = field(field(payload, "counts"), "retrying") || 0
+    min(running * 45 + retrying * 15, 100)
+  end
+
+  defp route_hint_text(run, lang) do
+    run
+    |> field("route_hint")
+    |> normalize_blank_text()
+    |> Kernel.||(tr(lang, "n/a", "未提供"))
+  end
 
   defp normalized_checks(nil), do: []
   defp normalized_checks(checks) when is_map(checks), do: Enum.sort_by(checks, fn {key, _value} -> to_string(key) end)
@@ -631,45 +1490,77 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp doctor_value(value) when is_number(value), do: to_string(value)
   defp doctor_value(value), do: inspect(value, pretty: true, limit: :infinity)
 
-  defp log_streams(nil), do: []
-
-  defp log_streams(logs) when is_map(logs) do
-    top_level =
-      case blank_to_nil(field(logs, "agent")) do
-        nil -> []
-        content -> [%{id: "agent", label: "Agent", content: content}]
-      end
-
-    raw_streams =
-      case field(logs, "raw") do
-        raw when is_map(raw) ->
-          raw
-          |> Enum.map(fn {key, value} -> %{id: "raw:" <> to_string(key), label: to_string(key), content: to_string(value)} end)
-          |> Enum.sort_by(& &1.label)
-
-        _ ->
-          []
-      end
-
-    top_level ++ raw_streams
+  defp has_console_streams?(status) do
+    present?(agent_log_content(field(status, "logs"))) or
+      present?(decision_log_content(field(status, "latest_events"))) or
+      raw_log_streams(field(status, "logs")) != []
   end
 
-  defp log_streams(_logs), do: []
+  defp agent_log_content(logs) when is_map(logs), do: blank_to_nil(field(logs, "agent"))
+  defp agent_log_content(_logs), do: nil
 
-  defp default_log_stream_id(logs) do
-    case log_streams(logs) do
+  defp decision_log_content(nil), do: nil
+
+  defp decision_log_content(events) when is_list(events) do
+    events
+    |> Enum.map(&decision_event_line/1)
+    |> Enum.reject(&is_nil/1)
+    |> case do
+      [] -> nil
+      lines -> Enum.join(lines, "\n")
+    end
+  end
+
+  defp decision_log_content(_events), do: nil
+
+  defp decision_event_line(event) when is_map(event) do
+    summary = blank_to_nil(field(event, "summary"))
+
+    if summary do
+      ts = blank_to_nil(field(event, "ts")) || "n/a"
+      type = blank_to_nil(field(event, "type")) || "event"
+      actor = blank_to_nil(field(event, "actor"))
+
+      "[#{ts}] #{type}" <>
+        if(actor, do: " @ #{actor}", else: "") <>
+        "\n" <> summary
+    else
+      nil
+    end
+  end
+
+  defp decision_event_line(_event), do: nil
+
+  defp raw_log_streams(nil), do: []
+
+  defp raw_log_streams(logs) when is_map(logs) do
+    case field(logs, "raw") do
+      raw when is_map(raw) ->
+        raw
+        |> Enum.map(fn {key, value} -> %{id: "raw:" <> to_string(key), label: to_string(key), content: to_string(value)} end)
+        |> Enum.sort_by(& &1.label)
+
+      _ ->
+        []
+    end
+  end
+
+  defp raw_log_streams(_logs), do: []
+
+  defp default_raw_log_stream_id(logs) do
+    case raw_log_streams(logs) do
       [first | _rest] -> first.id
       [] -> nil
     end
   end
 
-  defp active_log_stream(status, active_stream) do
-    active_stream || default_log_stream_id(field(status, "logs"))
+  defp active_raw_log_stream(status, active_stream) do
+    active_stream || default_raw_log_stream_id(field(status, "logs"))
   end
 
-  defp selected_log_stream(logs, active_stream) do
-    stream_id = active_stream || default_log_stream_id(logs)
-    Enum.find(log_streams(logs), &(&1.id == stream_id))
+  defp selected_raw_log_stream(logs, active_stream) do
+    stream_id = active_stream || default_raw_log_stream_id(logs)
+    Enum.find(raw_log_streams(logs), &(&1.id == stream_id))
   end
 
   defp runtime_label(nil, lang), do: tr(lang, "Unknown", "未知")
@@ -707,6 +1598,351 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp runtime_reason(_runtime_control, lang), do: tr(lang, "No runtime control state returned.", "当前没有返回运行时控制状态。")
 
+  defp issue_control_label(nil, lang), do: tr(lang, "Active", "活跃")
+
+  defp issue_control_label(issue_control, lang) when is_map(issue_control) do
+    if field(issue_control, "held") in [true, "true"] do
+      tr(lang, "Held", "已挂起")
+    else
+      tr(lang, "Active", "活跃")
+    end
+  end
+
+  defp issue_control_label(_issue_control, lang), do: tr(lang, "Active", "活跃")
+
+  defp issue_control_reason(nil, lang),
+    do: tr(lang, "This issue is eligible for dispatch when the runtime is active.", "该议题在 runtime 活跃时可被派发。")
+
+  defp issue_control_reason(issue_control, lang) when is_map(issue_control) do
+    held_at = blank_to_nil(field(issue_control, "held_at"))
+    reason = blank_to_nil(field(issue_control, "reason"))
+
+    cond do
+      (field(issue_control, "held") in [true, "true"] and reason) && held_at ->
+        tr(lang, "Held at #{held_at}: #{reason}", "于 #{held_at} 挂起：#{reason}")
+
+      field(issue_control, "held") in [true, "true"] and reason ->
+        tr(lang, "Held: #{reason}", "已挂起：#{reason}")
+
+      field(issue_control, "held") in [true, "true"] ->
+        tr(lang, "This issue is manually held until release is requested.", "该议题已被手动挂起，直到显式解除。")
+
+      true ->
+        tr(lang, "This issue is eligible for dispatch when the runtime is active.", "该议题在 runtime 活跃时可被派发。")
+    end
+  end
+
+  defp issue_control_reason(_issue_control, lang),
+    do: tr(lang, "This issue is eligible for dispatch when the runtime is active.", "该议题在 runtime 活跃时可被派发。")
+
+  defp runtime_issue_label(nil, lang), do: tr(lang, "No live session", "当前没有实时会话")
+
+  defp runtime_issue_label(runtime_issue, lang) when is_map(runtime_issue) do
+    scope = field(runtime_issue, "scope")
+    thread_id = blank_to_nil(field(runtime_issue, "thread_id"))
+    turn_id = blank_to_nil(field(runtime_issue, "turn_id"))
+    session_id = blank_to_nil(field(runtime_issue, "session_id"))
+
+    cond do
+      thread_id && turn_id -> "#{thread_id} / #{turn_id}"
+      session_id -> session_id
+      scope == "retrying" -> tr(lang, "Queued retry", "已排队重试")
+      scope == "running" -> tr(lang, "Running", "运行中")
+      true -> tr(lang, "No live session", "当前没有实时会话")
+    end
+  end
+
+  defp runtime_issue_label(_runtime_issue, lang), do: tr(lang, "No live session", "当前没有实时会话")
+
+  defp runtime_issue_detail(nil, lang),
+    do: tr(lang, "Load a running issue to inspect live session metadata.", "加载一个运行中的议题后，可在这里看到实时会话元数据。")
+
+  defp runtime_issue_detail(runtime_issue, lang) when is_map(runtime_issue) do
+    scope = field(runtime_issue, "scope") || tr(lang, "unknown", "未知")
+    pid = blank_to_nil(field(runtime_issue, "codex_app_server_pid"))
+    last_event = blank_to_nil(field(runtime_issue, "last_codex_event"))
+    worker_host = blank_to_nil(field(runtime_issue, "worker_host"))
+    attempt = field(runtime_issue, "attempt")
+    due_in_ms = field(runtime_issue, "due_in_ms")
+
+    cond do
+      scope == "running" ->
+        parts =
+          [
+            tr(lang, "Scope", "范围") <> ": " <> to_string(scope),
+            worker_host && tr(lang, "Worker", "工作节点") <> ": " <> worker_host,
+            pid && tr(lang, "AppServer PID", "AppServer PID") <> ": " <> pid,
+            last_event && tr(lang, "Last event", "最新事件") <> ": " <> to_string(last_event)
+          ]
+          |> Enum.reject(&is_nil/1)
+
+        Enum.join(parts, " | ")
+
+      scope == "retrying" ->
+        parts =
+          [
+            tr(lang, "Scope", "范围") <> ": " <> to_string(scope),
+            is_integer(attempt) && tr(lang, "Attempt", "尝试次数") <> ": " <> Integer.to_string(attempt),
+            is_integer(due_in_ms) && tr(lang, "Due in", "预计开始") <> ": " <> Integer.to_string(due_in_ms) <> "ms"
+          ]
+          |> Enum.reject(&is_nil/1)
+
+        Enum.join(parts, " | ")
+
+      true ->
+        tr(lang, "No live runtime entry returned for this issue.", "当前议题没有返回实时运行条目。")
+    end
+  end
+
+  defp runtime_issue_detail(_runtime_issue, lang),
+    do: tr(lang, "Load a running issue to inspect live session metadata.", "加载一个运行中的议题后，可在这里看到实时会话元数据。")
+
+  defp delivery_route(nil), do: %{}
+  defp delivery_route(delivery) when is_map(delivery), do: field(delivery, "route") || %{}
+  defp delivery_route(_delivery), do: %{}
+
+  defp delivery_pull_request(nil), do: %{}
+  defp delivery_pull_request(delivery) when is_map(delivery), do: field(delivery, "pull_request") || %{}
+  defp delivery_pull_request(_delivery), do: %{}
+
+  defp delivery_ci(nil), do: %{}
+  defp delivery_ci(delivery) when is_map(delivery), do: field(delivery, "ci") || %{}
+  defp delivery_ci(_delivery), do: %{}
+
+  defp delivery_automation(nil), do: %{}
+  defp delivery_automation(delivery) when is_map(delivery), do: field(delivery, "automation") || %{}
+  defp delivery_automation(_delivery), do: %{}
+
+  defp delivery_route_label(delivery, lang) do
+    case field(delivery_route(delivery), "status") do
+      "merged" -> tr(lang, "Merged", "已合并")
+      "done" -> tr(lang, "Done", "已完成")
+      "merging" -> tr(lang, "Merging", "合并中")
+      "awaiting_pr" -> tr(lang, "Awaiting PR", "等待创建 PR")
+      "human_review" -> tr(lang, "Human Review", "人工评审")
+      "ready_for_merging" -> tr(lang, "Ready for Merging", "可进入 Merging")
+      "ready_for_human_review" -> tr(lang, "Ready for Human Review", "可进入人工评审")
+      "in_progress" -> tr(lang, "In progress", "处理中")
+      _ -> tr(lang, "Unknown", "未知")
+    end
+  end
+
+  defp delivery_pr_url(delivery), do: blank_to_nil(field(delivery_pull_request(delivery), "url"))
+
+  defp delivery_ci_url(delivery), do: blank_to_nil(field(delivery_ci(delivery), "url"))
+
+  defp operator_instruction(status) when is_map(status) do
+    field(status, "latest_operator_instruction") || field(status, "pending_operator_instruction")
+  end
+
+  defp operator_instruction(_status), do: nil
+
+  defp operator_instruction_label(status, lang) do
+    case operator_instruction(status) do
+      nil -> tr(lang, "None tracked", "当前没有跟踪中的指令")
+      instruction -> instruction_state_text(instruction, lang)
+    end
+  end
+
+  defp operator_instruction_detail(status, lang) do
+    case operator_instruction(status) do
+      nil ->
+        tr(lang, "Append or steer a run to start tracking an operator instruction lifecycle.", "通过追加指令或引导运行，开始跟踪一条操作指令的生命周期。")
+
+      instruction ->
+        instruction_detail_text(instruction, lang)
+    end
+  end
+
+  defp instruction_state_text(instruction, lang) when is_map(instruction) do
+    case field(instruction, "delivery_state") do
+      "queued" -> tr(lang, "Queued", "待下次重启应用")
+      "restart_requested" -> tr(lang, "Restart requested", "已请求重启应用")
+      "applied" -> tr(lang, "Applied", "已应用")
+      "superseded" -> tr(lang, "Superseded", "已被替换")
+      "cleared" -> tr(lang, "Cleared", "已清除")
+      _ -> tr(lang, "Tracked", "已跟踪")
+    end
+  end
+
+  defp instruction_state_text(_instruction, lang), do: tr(lang, "Tracked", "已跟踪")
+
+  defp instruction_detail_text(instruction, lang) when is_map(instruction) do
+    message = blank_to_nil(field(instruction, "message"))
+    profile = blank_to_nil(field(instruction, "profile"))
+    queued_at = blank_to_nil(field(instruction, "queued_at"))
+    queued_via_action = pending_action_label(field(instruction, "queued_via_action"), lang)
+    restart_requested_at = blank_to_nil(field(instruction, "restart_requested_at"))
+    restart_requested_via_action = pending_action_label(field(instruction, "restart_requested_via_action"), lang)
+    applied_at = blank_to_nil(field(instruction, "applied_at"))
+    applied_via_scope = blank_to_nil(field(instruction, "applied_via_scope"))
+    superseded_at = blank_to_nil(field(instruction, "superseded_at"))
+    superseded_by_action = pending_action_label(field(instruction, "superseded_by_action"), lang)
+    cleared_at = blank_to_nil(field(instruction, "cleared_at"))
+    cleared_by_action = pending_action_label(field(instruction, "cleared_by_action"), lang)
+
+    cond do
+      message && applied_at && queued_via_action && applied_via_scope ->
+        tr(
+          lang,
+          "Queued via #{queued_via_action} at #{queued_at || "unknown"} and applied at #{applied_at} when runtime entered #{applied_via_scope}: #{message}",
+          "已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队，并于 #{applied_at} 在 runtime 进入 #{applied_via_scope} 时应用：#{message}"
+        )
+
+      message && restart_requested_at && restart_requested_via_action && queued_via_action ->
+        tr(
+          lang,
+          "Queued via #{queued_via_action} at #{queued_at || "unknown"} and marked for restart via #{restart_requested_via_action} at #{restart_requested_at}: #{message}",
+          "已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队，并于 #{restart_requested_at} 通过 #{restart_requested_via_action} 标记为重启应用：#{message}"
+        )
+
+      message && superseded_at && superseded_by_action && queued_via_action ->
+        tr(
+          lang,
+          "Queued via #{queued_via_action} at #{queued_at || "unknown"} and superseded via #{superseded_by_action} at #{superseded_at}: #{message}",
+          "已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队，并于 #{superseded_at} 通过 #{superseded_by_action} 被替换：#{message}"
+        )
+
+      message && cleared_at && cleared_by_action && queued_via_action ->
+        tr(
+          lang,
+          "Queued via #{queued_via_action} at #{queued_at || "unknown"} and cleared via #{cleared_by_action} at #{cleared_at}: #{message}",
+          "已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队，并于 #{cleared_at} 通过 #{cleared_by_action} 清除：#{message}"
+        )
+
+      message && profile && queued_via_action ->
+        tr(
+          lang,
+          "Profile #{profile} queued via #{queued_via_action} at #{queued_at || "unknown"}: #{message}",
+          "模板 #{profile} 已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队：#{message}"
+        )
+
+      message && queued_via_action ->
+        tr(
+          lang,
+          "Queued via #{queued_via_action} at #{queued_at || "unknown"}: #{message}",
+          "已通过 #{queued_via_action} 在 #{queued_at || "未知时间"} 排队：#{message}"
+        )
+
+      true ->
+        tr(lang, "Append or steer a run to start tracking an operator instruction lifecycle.", "通过追加指令或引导运行，开始跟踪一条操作指令的生命周期。")
+    end
+  end
+
+  defp instruction_detail_text(_instruction, lang),
+    do: tr(lang, "Append or steer a run to start tracking an operator instruction lifecycle.", "通过追加指令或引导运行，开始跟踪一条操作指令的生命周期。")
+
+  defp instruction_history(entries) when is_list(entries), do: entries
+  defp instruction_history(_entries), do: []
+
+  defp instruction_state_timestamp(instruction) when is_map(instruction) do
+    blank_to_nil(field(instruction, "applied_at")) ||
+      blank_to_nil(field(instruction, "restart_requested_at")) ||
+      blank_to_nil(field(instruction, "superseded_at")) ||
+      blank_to_nil(field(instruction, "cleared_at")) ||
+      blank_to_nil(field(instruction, "queued_at"))
+  end
+
+  defp instruction_state_timestamp(_instruction), do: nil
+
+  defp instruction_history_meta(instruction, lang) when is_map(instruction) do
+    detail = instruction_detail_text(instruction, lang)
+    if is_binary(detail), do: detail, else: tr(lang, "No instruction metadata returned.", "当前没有返回指令元数据。")
+  end
+
+  defp instruction_history_meta(_instruction, lang),
+    do: tr(lang, "No instruction metadata returned.", "当前没有返回指令元数据。")
+
+  defp pending_action_label("instruction", lang), do: tr(lang, "append", "追加指令")
+  defp pending_action_label("clear_instruction", lang), do: tr(lang, "clear", "清除指令")
+  defp pending_action_label("restart", lang), do: tr(lang, "restart", "重启运行")
+  defp pending_action_label("steer", lang), do: tr(lang, "steer", "引导运行")
+  defp pending_action_label(_action, _lang), do: nil
+
+  defp action_disabled?(nil, _action), do: true
+
+  defp action_disabled?(status, "pause") do
+    field(field(status, "runtime_control"), "paused") in [true, "true"]
+  end
+
+  defp action_disabled?(status, "resume") do
+    field(field(status, "runtime_control"), "paused") not in [true, "true"]
+  end
+
+  defp action_disabled?(status, "cancel") do
+    runtime_scope(status) not in ["running", "retrying"]
+  end
+
+  defp action_disabled?(status, "hold") do
+    field(field(status, "issue_control"), "held") in [true, "true"]
+  end
+
+  defp action_disabled?(status, "release") do
+    field(field(status, "issue_control"), "held") not in [true, "true"]
+  end
+
+  defp action_disabled?(status, "clear_instruction") do
+    is_nil(field(status, "pending_operator_instruction"))
+  end
+
+  defp action_disabled?(status, action) when action in ["restart", "instruction", "steer"] do
+    is_nil(field(status, "issue"))
+  end
+
+  defp action_disabled?(_status, _action), do: false
+
+  defp action_guidance(nil, lang),
+    do: tr(lang, "Load an issue first. Runtime and issue controls stay disabled until a concrete issue is selected.", "先加载一个议题。未选中具体议题前，运行时和议题控制会保持禁用。")
+
+  defp action_guidance(status, lang) do
+    runtime_paused = field(field(status, "runtime_control"), "paused") in [true, "true"]
+    issue_held = field(field(status, "issue_control"), "held") in [true, "true"]
+    runtime_scope = runtime_scope(status)
+    pending_instruction = field(status, "pending_operator_instruction")
+    pending_message = blank_to_nil(field(pending_instruction, "message"))
+    pending_state = blank_to_nil(field(pending_instruction, "delivery_state"))
+    latest_instruction = operator_instruction(status)
+    latest_state = blank_to_nil(field(latest_instruction, "delivery_state"))
+
+    cond do
+      latest_state == "applied" ->
+        tr(lang, "The latest operator instruction has already been applied. Queue a new one only if direction changed again.", "最近一条操作指令已经应用。只有在方向再次变化时才需要再排队新的指令。")
+
+      latest_state == "superseded" ->
+        tr(lang, "The latest visible instruction record was superseded. Check the newer queued instruction before acting.", "当前显示的最近一条指令记录已经被替换。继续操作前先看更新后的待生效指令。")
+
+      latest_state == "cleared" ->
+        tr(lang, "The pending operator instruction was cleared. Append or steer again only if a new direction is needed.", "待生效指令已经清除。只有在需要新的方向时才再次追加或引导。")
+
+      pending_message && pending_state == "restart_requested" ->
+        tr(lang, "A queued operator instruction is already marked for the next restart path. Monitor the next run instead of re-sending it.", "当前已有一条待生效指令标记为通过下次重启应用。优先观察下一轮运行，而不是重复发送。")
+
+      pending_message ->
+        tr(lang, "A queued operator instruction is waiting for the next restart. Use Restart run or Steer run to apply it sooner.", "当前有一条待生效指令正在等待下次重启。要立即生效，请使用“重启运行”或“引导运行”。")
+
+      runtime_paused ->
+        tr(lang, "Runtime intake is paused. You can resume intake, hold/release the issue, or restart it for later dispatch.", "runtime intake 当前已暂停。你可以恢复 intake，也可以挂起/解除该议题，或安排它稍后重启。")
+
+      issue_held ->
+        tr(lang, "This issue is manually held. Release the hold before expecting redispatch.", "该议题目前处于手动挂起状态。若希望重新派发，先解除挂起。")
+
+      runtime_scope == "running" ->
+        tr(lang, "A live run is active. Cancel stops the current run, restart relaunches it, and steer appends guidance before restart.", "当前已有活跃运行。取消会终止当前运行，重启会重新拉起，\"引导运行\" 会先追加指令再重启。")
+
+      runtime_scope == "retrying" ->
+        tr(lang, "This issue is queued for retry. Cancel removes the queued retry; restart or steer will bring it back in immediately.", "该议题当前处于重试排队中。取消会移除当前重试，重启或引导运行会尝试立即把它拉回。")
+
+      true ->
+        tr(lang, "This issue is currently idle. Restart or steer can bring it back into intake immediately when runtime capacity allows.", "该议题当前处于空闲状态。在 runtime 容量允许时，重启或引导运行可以立即把它拉回 intake。")
+    end
+  end
+
+  defp runtime_scope(status) when is_map(status) do
+    field(field(status, "runtime_issue"), "scope")
+  end
+
+  defp runtime_scope(_status), do: nil
+
   defp field(map, key) when is_map(map) do
     Map.get(map, key) || Map.get(map, String.to_atom(key))
   end
@@ -726,6 +1962,18 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp error_message(lang, reason), do: tr(lang, "Bridge request failed: #{inspect(reason)}", "Bridge 请求失败: #{inspect(reason)}")
 
+  defp load_runtime_payload do
+    Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  end
+
+  defp orchestrator do
+    Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
+  end
+
+  defp snapshot_timeout_ms do
+    Endpoint.config(:snapshot_timeout_ms) || 15_000
+  end
+
   defp state_badge_class(value) when value in [nil, ""], do: "state-badge"
 
   defp state_badge_class(value) do
@@ -743,6 +1991,13 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp blank_to_nil(value) when value in [nil, ""], do: nil
   defp blank_to_nil(value), do: value
 
+  defp normalize_blank_text(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp normalize_blank_text(value), do: blank_to_nil(value)
+
   defp parse_integer(nil, fallback), do: fallback
 
   defp parse_integer(value, fallback) do
@@ -754,15 +2009,82 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp present?(value), do: not is_nil(value) and value != "" and value != []
 
+  defp format_int(value) when is_integer(value) do
+    value
+    |> Integer.to_string()
+    |> String.graphemes()
+    |> Enum.reverse()
+    |> Enum.chunk_every(3)
+    |> Enum.map_join(",", &Enum.reverse/1)
+    |> String.reverse()
+  end
+
+  defp format_int(_value), do: "n/a"
+
+  defp completed_runtime_seconds(payload) do
+    field(field(payload, "codex_totals"), "seconds_running") || 0
+  end
+
+  defp total_runtime_seconds(payload, now) do
+    completed_runtime_seconds(payload) +
+      Enum.reduce(normalized_runtime_entries(field(payload, "running")), 0, fn entry, total ->
+        total + runtime_seconds_from_started_at(field(entry, "started_at"), now)
+      end)
+  end
+
+  defp format_runtime_seconds(seconds) when is_integer(seconds) and seconds >= 3600 do
+    hours = div(seconds, 3600)
+    minutes = div(rem(seconds, 3600), 60)
+    "#{hours}h #{minutes}m"
+  end
+
+  defp format_runtime_seconds(seconds) when is_integer(seconds) and seconds >= 60 do
+    minutes = div(seconds, 60)
+    remaining = rem(seconds, 60)
+    "#{minutes}m #{remaining}s"
+  end
+
+  defp format_runtime_seconds(seconds) when is_integer(seconds) and seconds >= 0,
+    do: "#{seconds}s"
+
+  defp format_runtime_seconds(_seconds), do: "0s"
+
+  defp runtime_seconds_from_started_at(nil, _now), do: 0
+
+  defp runtime_seconds_from_started_at(started_at, now) do
+    with {:ok, started_at_dt, _offset} <- DateTime.from_iso8601(to_string(started_at)) do
+      max(DateTime.diff(now, started_at_dt, :second), 0)
+    else
+      _ -> 0
+    end
+  end
+
   defp schedule_refresh(0), do: :ok
   defp schedule_refresh(interval_ms), do: Process.send_after(self(), :refresh_tick, interval_ms)
+  defp schedule_runtime_tick, do: Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
 
   defp normalize_lang("en"), do: "en"
   defp normalize_lang("zh"), do: "zh"
   defp normalize_lang(_lang), do: @default_lang
 
-  defp console_path("en"), do: "/console?lang=en"
-  defp console_path(_lang), do: "/console?lang=zh"
+  defp console_path(lang, adapter_id, profile_id) do
+    query =
+      %{}
+      |> maybe_put_query("lang", lang)
+      |> maybe_put_query("adapter", adapter_id)
+      |> maybe_put_query("profile", profile_id)
+      |> URI.encode_query()
+
+    if query == "" do
+      "/"
+    else
+      "/?" <> query
+    end
+  end
+
+  defp maybe_put_query(query, _key, nil), do: query
+  defp maybe_put_query(query, _key, ""), do: query
+  defp maybe_put_query(query, key, value), do: Map.put(query, key, value)
 
   defp refresh_options("en"), do: [{"Off", "off"}, {"15s", "15000"}, {"30s", "30000"}, {"60s", "60000"}]
   defp refresh_options(_lang), do: [{"关闭", "off"}, {"15s", "15000"}, {"30s", "30000"}, {"60s", "60000"}]

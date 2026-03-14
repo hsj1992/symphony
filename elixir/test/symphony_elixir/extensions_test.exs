@@ -89,6 +89,22 @@ defmodule SymphonyElixir.ExtensionsTest do
 
       {:reply, payload, state}
     end
+
+    def handle_call({:issue_control, issue_identifier, action, reason}, _from, state) do
+      payload =
+        Keyword.get(state, :issue_control, %{
+          issue_identifier: issue_identifier,
+          action: action,
+          status: "scheduled",
+          scope: "running",
+          changed: true,
+          operations: ["terminate_running_agent", "schedule_immediate_retry"],
+          reason: reason,
+          requested_at: DateTime.utc_now()
+        })
+
+      {:reply, payload, state}
+    end
   end
 
   defmodule FakeConsoleClient do
@@ -122,6 +138,8 @@ defmodule SymphonyElixir.ExtensionsTest do
     end
 
     def get_status(issue_identifier, _opts) do
+      pending_instruction = pending_instruction_state()
+
       {:ok,
        %{
          "issue" => issue_identifier,
@@ -137,12 +155,37 @@ defmodule SymphonyElixir.ExtensionsTest do
            "paused_at" => nil,
            "pause_reason" => nil
          },
+         "runtime_issue" => %{
+           "scope" => "running",
+           "status" => "active",
+           "issue_identifier" => issue_identifier,
+           "session_id" => "thread-live-turn-live",
+           "thread_id" => "thread-live",
+           "turn_id" => "turn-live",
+           "turn_count" => 1,
+           "codex_app_server_pid" => "4242",
+           "worker_host" => nil,
+           "workspace_path" => "/tmp/workspace",
+           "last_codex_event" => "notification",
+           "last_codex_timestamp" => "2026-03-12T15:09:00+08:00",
+           "runtime_seconds" => 42
+         },
+         "issue_control" => %{
+           "held" => false,
+           "issue_identifier" => issue_identifier,
+           "held_at" => nil,
+           "reason" => nil
+         },
+         "pending_operator_instruction" => pending_instruction,
+         "latest_operator_instruction" => latest_instruction_state(),
+         "operator_instruction_history" => instruction_history_state(),
          "checks" => %{
            "local_validation" => %{
              "status" => "passed",
              "summary" => "Dry-run validation passed"
            }
          },
+         "delivery" => delivery_state(),
          "latest_events" => [
            %{
              "ts" => "2026-03-12T15:08:00+08:00",
@@ -163,17 +206,22 @@ defmodule SymphonyElixir.ExtensionsTest do
        }}
     end
 
-    def create_action(_payload) do
+    def create_action(payload) do
+      action = payload["action"] || payload[:action] || "pause"
+      paused = action == "pause"
+      held = action == "hold"
+      update_pending_instruction_state(action, payload)
+
       {:ok,
        %{
-         "action" => "pause",
+         "action" => action,
          "runtime" => %{
-           "paused" => true,
+           "paused" => paused,
            "changed" => true,
            "requested_at" => "2026-03-12T15:11:00+08:00",
            "operations" => ["pause_intake", "pause_retries"],
            "pause_reason" => nil,
-           "paused_at" => "2026-03-12T15:11:00+08:00"
+           "paused_at" => if(paused, do: "2026-03-12T15:11:00+08:00", else: nil)
          },
          "status" => %{
            "issue" => "PROJ-101",
@@ -185,10 +233,545 @@ defmodule SymphonyElixir.ExtensionsTest do
            "commit" => "abcdef1",
            "updated_at" => "2026-03-12T15:10:00+08:00",
            "runtime_control" => %{
-             "paused" => true,
-             "paused_at" => "2026-03-12T15:11:00+08:00",
+             "paused" => paused,
+             "paused_at" => if(paused, do: "2026-03-12T15:11:00+08:00", else: nil),
              "pause_reason" => nil
            },
+           "runtime_issue" => %{
+             "scope" => if(action == "cancel", do: "retrying", else: "running"),
+             "status" => if(action == "cancel", do: "queued", else: "active"),
+             "issue_identifier" => "PROJ-101",
+             "session_id" => "thread-live-turn-live",
+             "thread_id" => "thread-live",
+             "turn_id" => "turn-live",
+             "turn_count" => 1,
+             "codex_app_server_pid" => "4242",
+             "worker_host" => nil,
+             "workspace_path" => "/tmp/workspace",
+             "last_codex_event" => "notification",
+             "last_codex_timestamp" => "2026-03-12T15:09:00+08:00",
+             "runtime_seconds" => 42
+           },
+           "issue_control" => %{
+             "held" => held,
+             "issue_identifier" => "PROJ-101",
+             "held_at" => if(held, do: "2026-03-12T15:11:00+08:00", else: nil),
+             "reason" => nil
+           },
+           "pending_operator_instruction" => pending_instruction_state(),
+           "latest_operator_instruction" => latest_instruction_state(),
+           "operator_instruction_history" => instruction_history_state(),
+           "checks" => %{},
+           "delivery" => delivery_state(),
+           "latest_events" => []
+         }
+       }}
+    end
+
+    defp delivery_state do
+      %{
+        "route" => %{
+          "status" => "ready_for_merging",
+          "linear_state" => "Human Review",
+          "route_hint" => "Merging",
+          "summary" => "Validation is green and the issue appears ready for Merging."
+        },
+        "pull_request" => %{
+          "status" => "open",
+          "number" => 17,
+          "title" => "Example bridge delivery",
+          "url" => "https://example.invalid/pr/17",
+          "head_branch" => "feat/example-bridge-console",
+          "base_branch" => "main",
+          "merge_commit_sha" => nil
+        },
+        "ci" => %{
+          "status" => "success",
+          "pipeline" => "207",
+          "url" => "https://example.invalid/pipeline/207",
+          "summary" => "Woodpecker pipeline 207 passed"
+        },
+        "automation" => %{
+          "status" => "healthy",
+          "poll_healthy" => true,
+          "last_success_at" => "2026-03-12T15:09:00+08:00",
+          "last_error" => nil,
+          "summary" => "Merge sync is healthy."
+        }
+      }
+    end
+
+    defp pending_instruction_state do
+      Process.get({__MODULE__, :pending_instruction})
+    end
+
+    defp latest_instruction_state do
+      Process.get({__MODULE__, :latest_instruction})
+    end
+
+    defp instruction_history_state do
+      Process.get({__MODULE__, :instruction_history}, [])
+    end
+
+    defp push_history(entry) do
+      Process.put({__MODULE__, :instruction_history}, [entry | instruction_history_state()])
+    end
+
+    defp update_pending_instruction_state(action, payload) do
+      message = payload["message"] || payload[:message]
+      profile = payload["profile"] || payload[:profile]
+
+      case action do
+        "instruction" when is_binary(message) and message != "" ->
+          if pending = pending_instruction_state() do
+            superseded =
+              Map.merge(pending, %{
+                "delivery_state" => "superseded",
+                "superseded_at" => "2026-03-12T15:10:30+08:00",
+                "superseded_by_action" => "instruction"
+              })
+
+            Process.put({__MODULE__, :latest_instruction}, superseded)
+            push_history(superseded)
+          end
+
+          pending = %{
+            "message" => message,
+            "profile" => profile,
+            "queued_at" => "2026-03-12T15:11:00+08:00",
+            "queued_via_action" => "instruction",
+            "delivery_state" => "queued"
+          }
+
+          Process.put({__MODULE__, :pending_instruction}, pending)
+          Process.put({__MODULE__, :latest_instruction}, pending)
+
+        "steer" when is_binary(message) and message != "" ->
+          if pending = pending_instruction_state() do
+            superseded =
+              Map.merge(pending, %{
+                "delivery_state" => "superseded",
+                "superseded_at" => "2026-03-12T15:10:30+08:00",
+                "superseded_by_action" => "steer"
+              })
+
+            Process.put({__MODULE__, :latest_instruction}, superseded)
+            push_history(superseded)
+          end
+
+          pending = %{
+            "message" => message,
+            "profile" => profile,
+            "queued_at" => "2026-03-12T15:11:00+08:00",
+            "queued_via_action" => "steer",
+            "delivery_state" => "restart_requested",
+            "restart_requested_at" => "2026-03-12T15:12:00+08:00",
+            "restart_requested_via_action" => "steer"
+          }
+
+          Process.put({__MODULE__, :pending_instruction}, pending)
+          Process.put({__MODULE__, :latest_instruction}, pending)
+
+        "restart" ->
+          case pending_instruction_state() do
+            %{} = pending ->
+              updated =
+                Map.merge(pending, %{
+                  "delivery_state" => "restart_requested",
+                  "restart_requested_at" => "2026-03-12T15:12:00+08:00",
+                  "restart_requested_via_action" => "restart"
+                })
+
+              Process.put({__MODULE__, :pending_instruction}, updated)
+              Process.put({__MODULE__, :latest_instruction}, updated)
+
+            _ ->
+              :ok
+          end
+
+        "clear_instruction" ->
+          case pending_instruction_state() do
+            %{} = pending ->
+              cleared =
+                Map.merge(pending, %{
+                  "delivery_state" => "cleared",
+                  "cleared_at" => "2026-03-12T15:12:30+08:00",
+                  "cleared_by_action" => "clear_instruction"
+                })
+
+              Process.put({__MODULE__, :pending_instruction}, nil)
+              Process.put({__MODULE__, :latest_instruction}, cleared)
+              push_history(cleared)
+
+            _ ->
+              :ok
+          end
+
+        _ ->
+          :ok
+      end
+    end
+  end
+
+  defmodule MultiAdapterConsoleClient do
+    def list_adapters do
+      [
+        %{
+          id: "alpha",
+          label: "Alpha Project",
+          base_url: "http://alpha.example",
+          token: "alpha-token",
+          timeout_ms: 15_000
+        },
+        %{
+          id: "beta",
+          label: "Beta Project",
+          base_url: "http://beta.example",
+          token: "beta-token",
+          timeout_ms: 15_000
+        }
+      ]
+    end
+
+    def meta(adapter_id) do
+      {:ok,
+       %{
+         "repo_key" => adapter_id || "alpha",
+         "repo_name" => adapter_name(adapter_id),
+         "issue_prefix" => issue_prefix(adapter_id),
+         "supports" => %{
+           "recent_runs" => true,
+           "doctor" => true,
+           "workpad" => true,
+           "actions" => true
+         },
+         "default_event_limit" => 10,
+         "default_refresh_seconds" => 15
+       }}
+    end
+
+    def list_runs(_limit, adapter_id) do
+      {:ok,
+       [
+         %{
+           "issue" => default_issue(adapter_id),
+           "phase" => "validation",
+           "route_hint" => "Merging",
+           "updated_at" => "2026-03-13T09:00:00+08:00"
+         }
+       ]}
+    end
+
+    def get_status(issue_identifier, _opts, adapter_id) do
+      {:ok,
+       %{
+         "issue" => issue_identifier,
+         "phase" => "handoff",
+         "summary" => "#{adapter_name(adapter_id)} status loaded successfully",
+         "next" => "Wait for remote CI to finish",
+         "route_hint" => "Merging",
+         "branch" => "feat/#{adapter_id || "alpha"}-console",
+         "commit" => "abcdef1",
+         "updated_at" => "2026-03-13T09:10:00+08:00",
+         "runtime_control" => %{
+           "paused" => false,
+           "paused_at" => nil,
+           "pause_reason" => nil
+         },
+         "checks" => %{
+           "local_validation" => %{
+             "status" => "passed",
+             "summary" => "#{adapter_name(adapter_id)} validation passed"
+           }
+         },
+         "latest_events" => [
+           %{
+             "ts" => "2026-03-13T09:08:00+08:00",
+             "type" => "validation_passed",
+             "summary" => "#{adapter_name(adapter_id)} validation passed",
+             "actor" => "worker.#{adapter_id || "alpha"}"
+           }
+         ],
+         "doctor" => %{"overall_ok" => true},
+         "workpad" => %{
+           "current_status" => "- Phase: validation\n- Summary: #{adapter_name(adapter_id)} current status",
+           "execution_timeline" => "| Time | Actor | Event | Summary |\n| --- | --- | --- | --- |\n| 2026-03-13 | symphony | validation_passed | #{adapter_name(adapter_id)} validation passed |"
+         },
+         "logs" => %{
+           "agent" => "#{adapter_name(adapter_id)} agent log line",
+           "raw" => %{"command.log" => "#{adapter_name(adapter_id)} raw command output"}
+         }
+       }}
+    end
+
+    def create_action(payload, adapter_id) do
+      action = payload["action"] || payload[:action] || "pause"
+
+      {:ok,
+       %{
+         "action" => action,
+         "runtime" => %{
+           "paused" => action == "pause",
+           "changed" => true,
+           "requested_at" => "2026-03-13T09:11:00+08:00",
+           "operations" => ["pause_intake", "pause_retries"],
+           "pause_reason" => nil,
+           "paused_at" => "2026-03-13T09:11:00+08:00"
+         },
+         "status" => %{
+           "issue" => default_issue(adapter_id),
+           "phase" => "handoff",
+           "summary" => "#{adapter_name(adapter_id)} status loaded successfully",
+           "next" => "Wait for remote CI to finish",
+           "route_hint" => "Merging",
+           "branch" => "feat/#{adapter_id || "alpha"}-console",
+           "commit" => "abcdef1",
+           "updated_at" => "2026-03-13T09:10:00+08:00",
+           "runtime_control" => %{
+             "paused" => action == "pause",
+             "paused_at" => "2026-03-13T09:11:00+08:00",
+             "pause_reason" => nil
+           },
+           "checks" => %{},
+           "latest_events" => []
+         }
+       }}
+    end
+
+    defp adapter_name("beta"), do: "Beta Project"
+    defp adapter_name(_adapter_id), do: "Alpha Project"
+
+    defp issue_prefix("beta"), do: "BETA"
+    defp issue_prefix(_adapter_id), do: "ALPHA"
+
+    defp default_issue("beta"), do: "BETA-202"
+    defp default_issue(_adapter_id), do: "ALPHA-101"
+  end
+
+  defmodule ProfileConsoleClient do
+    def meta do
+      {:ok,
+       %{
+         "repo_key" => "sample-project",
+         "repo_name" => "Sample Project",
+         "issue_prefix" => "PROJ",
+         "supports" => %{
+           "recent_runs" => true,
+           "doctor" => true,
+           "workpad" => true,
+           "actions" => true,
+           "profiles" => true
+         },
+         "default_event_limit" => 10,
+         "default_refresh_seconds" => 15,
+         "default_profile" => "frontend-fix",
+         "profiles" => [
+           %{
+             "id" => "frontend-fix",
+             "label" => %{"zh" => "前端修复", "en" => "Frontend Fix"},
+             "description" => %{
+               "zh" => "默认保留执行日志与 doctor。",
+               "en" => "Keep agent logs and doctor enabled by default."
+             },
+             "defaults" => %{
+               "events" => 12,
+               "includeLogs" => "agent",
+               "includeDoctor" => true,
+               "includeWorkpad" => true,
+               "syncLinear" => true
+             },
+             "instructionTemplate" => %{
+               "zh" => "聚焦 frontend/ 影响面，先修复行为回归。",
+               "en" => "Focus on frontend/ blast radius and fix regressions first."
+             }
+           },
+           %{
+             "id" => "ops-triage",
+             "label" => %{"zh" => "运维排障", "en" => "Ops Triage"},
+             "description" => %{
+               "zh" => "默认打开全部日志并优先看运行时状态。",
+               "en" => "Enable all logs and prioritize runtime state by default."
+             },
+             "defaults" => %{
+               "events" => 20,
+               "includeLogs" => "all",
+               "includeDoctor" => true,
+               "includeWorkpad" => true,
+               "syncLinear" => false
+             },
+             "instructionTemplate" => %{
+               "zh" => "先检查 runtime、doctor 与 CI，再决定人工干预。",
+               "en" => "Check runtime, doctor, and CI before deciding on manual intervention."
+             }
+           }
+         ]
+       }}
+    end
+
+    def list_runs(_limit) do
+      {:ok,
+       [
+         %{
+           "issue" => "PROJ-101",
+           "phase" => "validation",
+           "route_hint" => "Merging",
+           "updated_at" => "2026-03-13T18:00:00+08:00"
+         }
+       ]}
+    end
+
+    def get_status(issue_identifier, _opts) do
+      pending_instruction = Process.get({__MODULE__, :pending_instruction})
+
+      {:ok,
+       %{
+         "issue" => issue_identifier,
+         "phase" => "handoff",
+         "summary" => "Profile-backed status loaded successfully",
+         "next" => "Wait for remote CI to finish",
+         "route_hint" => "Merging",
+         "branch" => "feat/profile-console",
+         "commit" => "fedcba9",
+         "updated_at" => "2026-03-13T18:10:00+08:00",
+         "runtime_control" => %{
+           "paused" => false,
+           "paused_at" => nil,
+           "pause_reason" => nil
+         },
+         "checks" => %{},
+         "latest_events" => [],
+         "pending_operator_instruction" => pending_instruction,
+         "latest_operator_instruction" => Process.get({__MODULE__, :latest_instruction}),
+         "operator_instruction_history" => Process.get({__MODULE__, :instruction_history}, []),
+         "doctor" => %{"overall_ok" => true},
+         "workpad" => %{
+           "current_status" => "- Phase: validation\n- Summary: Profile current status"
+         },
+         "logs" => %{
+           "agent" => "profile agent log line"
+         }
+       }}
+    end
+
+    def create_action(payload) do
+      action = payload["action"] || payload[:action] || "instruction"
+      message = payload["message"] || payload[:message]
+      profile = payload["profile"] || payload[:profile]
+
+      case action do
+        "instruction" when is_binary(message) and message != "" ->
+          if pending = Process.get({__MODULE__, :pending_instruction}) do
+            superseded =
+              Map.merge(pending, %{
+                "delivery_state" => "superseded",
+                "superseded_at" => "2026-03-13T18:10:30+08:00",
+                "superseded_by_action" => "instruction"
+              })
+
+            Process.put({__MODULE__, :latest_instruction}, superseded)
+            Process.put({__MODULE__, :instruction_history}, [superseded | Process.get({__MODULE__, :instruction_history}, [])])
+          end
+
+          pending = %{
+            "message" => message,
+            "profile" => profile,
+            "queued_at" => "2026-03-13T18:11:00+08:00",
+            "queued_via_action" => "instruction",
+            "delivery_state" => "queued"
+          }
+
+          Process.put({__MODULE__, :pending_instruction}, pending)
+          Process.put({__MODULE__, :latest_instruction}, pending)
+
+        "steer" when is_binary(message) and message != "" ->
+          if pending = Process.get({__MODULE__, :pending_instruction}) do
+            superseded =
+              Map.merge(pending, %{
+                "delivery_state" => "superseded",
+                "superseded_at" => "2026-03-13T18:10:30+08:00",
+                "superseded_by_action" => "steer"
+              })
+
+            Process.put({__MODULE__, :latest_instruction}, superseded)
+            Process.put({__MODULE__, :instruction_history}, [superseded | Process.get({__MODULE__, :instruction_history}, [])])
+          end
+
+          pending = %{
+            "message" => message,
+            "profile" => profile,
+            "queued_at" => "2026-03-13T18:11:00+08:00",
+            "queued_via_action" => "steer",
+            "delivery_state" => "restart_requested",
+            "restart_requested_at" => "2026-03-13T18:12:00+08:00",
+            "restart_requested_via_action" => "steer"
+          }
+
+          Process.put({__MODULE__, :pending_instruction}, pending)
+          Process.put({__MODULE__, :latest_instruction}, pending)
+
+        "restart" ->
+          case Process.get({__MODULE__, :pending_instruction}) do
+            %{} = pending ->
+              updated =
+                Map.merge(pending, %{
+                  "delivery_state" => "restart_requested",
+                  "restart_requested_at" => "2026-03-13T18:12:00+08:00",
+                  "restart_requested_via_action" => "restart"
+                })
+
+              Process.put({__MODULE__, :pending_instruction}, updated)
+              Process.put({__MODULE__, :latest_instruction}, updated)
+
+            _ ->
+              :ok
+          end
+
+        "clear_instruction" ->
+          case Process.get({__MODULE__, :pending_instruction}) do
+            %{} = pending ->
+              cleared =
+                Map.merge(pending, %{
+                  "delivery_state" => "cleared",
+                  "cleared_at" => "2026-03-13T18:12:30+08:00",
+                  "cleared_by_action" => "clear_instruction"
+                })
+
+              Process.put({__MODULE__, :pending_instruction}, nil)
+              Process.put({__MODULE__, :latest_instruction}, cleared)
+              Process.put({__MODULE__, :instruction_history}, [cleared | Process.get({__MODULE__, :instruction_history}, [])])
+
+            _ ->
+              :ok
+          end
+
+        _ ->
+          :ok
+      end
+
+      if recipient = Application.get_env(:symphony_elixir, :profile_console_recipient) do
+        send(recipient, {:profile_console_action, payload})
+      end
+
+      {:ok,
+       %{
+         "action" => action,
+         "status" => %{
+           "issue" => "PROJ-101",
+           "phase" => "handoff",
+           "summary" => "Profile-backed status loaded successfully",
+           "next" => "Wait for remote CI to finish",
+           "route_hint" => "Merging",
+           "branch" => "feat/profile-console",
+           "commit" => "fedcba9",
+           "updated_at" => "2026-03-13T18:10:00+08:00",
+           "runtime_control" => %{
+             "paused" => false,
+             "paused_at" => nil,
+             "pause_reason" => nil
+           },
+           "pending_operator_instruction" => Process.get({__MODULE__, :pending_instruction}),
+           "latest_operator_instruction" => Process.get({__MODULE__, :latest_instruction}),
+           "operator_instruction_history" => Process.get({__MODULE__, :instruction_history}, []),
            "checks" => %{},
            "latest_events" => []
          }
@@ -199,6 +782,7 @@ defmodule SymphonyElixir.ExtensionsTest do
   setup do
     linear_client_module = Application.get_env(:symphony_elixir, :linear_client_module)
     console_client_module = Application.get_env(:symphony_elixir, :console_client_module)
+    profile_console_recipient = Application.get_env(:symphony_elixir, :profile_console_recipient)
 
     on_exit(fn ->
       if is_nil(linear_client_module) do
@@ -211,6 +795,12 @@ defmodule SymphonyElixir.ExtensionsTest do
         Application.delete_env(:symphony_elixir, :console_client_module)
       else
         Application.put_env(:symphony_elixir, :console_client_module, console_client_module)
+      end
+
+      if is_nil(profile_console_recipient) do
+        Application.delete_env(:symphony_elixir, :profile_console_recipient)
+      else
+        Application.put_env(:symphony_elixir, :profile_console_recipient, profile_console_recipient)
       end
     end)
 
@@ -562,6 +1152,20 @@ defmodule SymphonyElixir.ExtensionsTest do
              "operations" => ["pause_intake", "pause_retries"],
              "pause_reason" => "manual hold"
            } = json_response(conn, 202)
+
+    conn =
+      post(build_conn(), "/api/v1/control/MT-HTTP", %{
+        "action" => "restart",
+        "reason" => "manual restart"
+      })
+
+    assert %{
+             "action" => "restart",
+             "issue_identifier" => "MT-HTTP",
+             "status" => "scheduled",
+             "operations" => ["terminate_running_agent", "schedule_immediate_retry"],
+             "reason" => "manual restart"
+           } = json_response(conn, 202)
   end
 
   test "phoenix observability api preserves 405, 404, and unavailable behavior" do
@@ -609,6 +1213,22 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert json_response(post(build_conn(), "/api/v1/control", %{"action" => "stop"}), 400) ==
              %{"error" => %{"code" => "invalid_action", "message" => "Action must be pause or resume"}}
+
+    assert json_response(post(build_conn(), "/api/v1/control/MT-1", %{"action" => "pause"}), 400) ==
+             %{
+               "error" => %{
+                 "code" => "invalid_action",
+                 "message" => "Issue action must be cancel, restart, hold, or release"
+               }
+             }
+
+    assert json_response(post(build_conn(), "/api/v1/control/MT-1", %{"action" => "restart"}), 503) ==
+             %{
+               "error" => %{
+                 "code" => "orchestrator_unavailable",
+                 "message" => "Orchestrator is unavailable"
+               }
+             }
   end
 
   test "phoenix observability api preserves snapshot timeout behavior" do
@@ -686,7 +1306,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/")
+    {:ok, view, html} = live(build_conn(), "/dashboard")
     assert html =~ "Operations Dashboard"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
@@ -750,7 +1370,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       snapshot_timeout_ms: 5
     )
 
-    {:ok, _view, html} = live(build_conn(), "/")
+    {:ok, _view, html} = live(build_conn(), "/dashboard")
     assert html =~ "Snapshot unavailable"
     assert html =~ "snapshot_unavailable"
   end
@@ -759,10 +1379,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     Application.put_env(:symphony_elixir, :console_client_module, FakeConsoleClient)
     start_test_endpoint([])
 
-    {:ok, view, html} = live(build_conn(), "/console")
-    assert html =~ "工作流控制台"
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "运行控制台"
     assert html =~ "PROJ-101"
     assert html =~ "自动 15s"
+    assert html =~ "运行态总览"
 
     html =
       view
@@ -782,6 +1403,13 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "worker.frontend"
     assert html =~ "追加指令"
     assert html =~ "当前状态"
+    assert html =~ "当前没有跟踪中的指令"
+    assert html =~ "任务进度"
+    assert html =~ "PR 已打开"
+    assert html =~ "CI 通过"
+    assert html =~ "可合并"
+    assert html =~ "https://example.invalid/pr/17"
+    assert html =~ "https://example.invalid/pipeline/207"
 
     pause_html =
       view
@@ -790,12 +1418,58 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     assert pause_html =~ "已记录暂停请求"
 
+    cancel_html =
+      view
+      |> element("#cancel-run")
+      |> render_click()
+
+    assert cancel_html =~ "已取消当前运行"
+
+    restart_html =
+      view
+      |> element("#restart-run")
+      |> render_click()
+
+    assert restart_html =~ "已安排重启"
+
+    hold_html =
+      view
+      |> element("#hold-run")
+      |> render_click()
+
+    assert hold_html =~ "已挂起议题"
+
+    queued_html =
+      view
+      |> element("#instruction-form")
+      |> render_submit(%{
+        "message" => "Queue this for the next restart",
+        "sync_linear" => "true",
+        "intent" => "append"
+      })
+
+    assert queued_html =~ "已将指令排队，等待下次重启应用"
+    assert queued_html =~ "待下次重启应用"
+    assert queued_html =~ "Queue this for the next restart"
+    assert queued_html =~ "追加指令"
+
+    cleared_html =
+      view
+      |> element("#clear-instruction")
+      |> render_click()
+
+    assert cleared_html =~ "已清除待生效指令"
+    assert cleared_html =~ "已清除"
+    assert cleared_html =~ "清除指令"
+
     logs_html =
       view
       |> element("button[phx-value-panel='logs']")
       |> render_click()
 
+    assert logs_html =~ "决策流"
     assert logs_html =~ "latest agent log line"
+    assert logs_html =~ "Adapter validation passed"
     assert logs_html =~ "command.log"
   end
 
@@ -804,7 +1478,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint([])
 
     {:ok, view, html} = live(build_conn(), "/console?lang=en")
-    assert html =~ "Bridge Console"
+    assert html =~ "Operator Cockpit"
     assert html =~ "Auto 15s"
     assert html =~ "Load issue"
 
@@ -828,8 +1502,124 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> element("#lang-zh")
       |> render_click()
 
-    assert zh_html =~ "工作流控制台"
+    assert zh_html =~ "运行控制台"
     assert zh_html =~ "加载议题"
+  end
+
+  test "root and /console both render the unified cockpit" do
+    Application.put_env(:symphony_elixir, :console_client_module, FakeConsoleClient)
+    start_test_endpoint([])
+
+    {:ok, _root_view, root_html} = live(build_conn(), "/?lang=en")
+    {:ok, _console_view, console_html} = live(build_conn(), "/console?lang=en")
+
+    assert root_html =~ "Operator Cockpit"
+    assert root_html =~ "Runtime Overview"
+    assert console_html =~ "Operator Cockpit"
+    assert console_html =~ "Runtime Overview"
+  end
+
+  test "bridge console switches adapters from query params and ui controls" do
+    Application.put_env(:symphony_elixir, :console_client_module, MultiAdapterConsoleClient)
+    start_test_endpoint([])
+
+    {:ok, view, html} = live(build_conn(), "/console?adapter=beta&lang=en")
+    assert html =~ "Beta Project"
+    assert html =~ "BETA-202"
+    assert html =~ "Load issue"
+
+    detail_html =
+      view
+      |> form("#issue-query-form", %{
+        "issue" => "BETA-202",
+        "branch" => "",
+        "events" => "10",
+        "include_logs" => "agent",
+        "doctor" => "true",
+        "workpad" => "true"
+      })
+      |> render_submit()
+
+    assert detail_html =~ "Beta Project status loaded successfully"
+    assert detail_html =~ "feat/beta-console"
+
+    switched_html =
+      render_change(view, "set_adapter", %{"adapter" => "alpha"})
+
+    assert switched_html =~ "Alpha Project"
+    assert switched_html =~ "ALPHA-101"
+    refute switched_html =~ "BETA-202"
+
+    zh_html =
+      view
+      |> element("#lang-zh")
+      |> render_click()
+
+    assert zh_html =~ "运行控制台"
+    assert zh_html =~ "Alpha Project"
+  end
+
+  test "bridge console applies project profiles and includes the selected profile in actions" do
+    Application.put_env(:symphony_elixir, :console_client_module, ProfileConsoleClient)
+    Application.put_env(:symphony_elixir, :profile_console_recipient, self())
+    start_test_endpoint([])
+
+    {:ok, view, html} = live(build_conn(), "/console?lang=en")
+    assert html =~ "Frontend Fix"
+    assert html =~ "Keep agent logs and doctor enabled by default."
+    assert html =~ ~s(value="12")
+
+    render_change(view, "set_profile", %{"profile" => "ops-triage"})
+    assert_patch(view, "/?lang=en&profile=ops-triage")
+    ops_html = render(view)
+    assert ops_html =~ "Ops Triage"
+    assert ops_html =~ "Enable all logs and prioritize runtime state by default."
+    assert ops_html =~ ~s(value="20")
+
+    _detail_html =
+      view
+      |> form("#issue-query-form", %{
+        "issue" => "PROJ-101",
+        "branch" => "",
+        "events" => "20",
+        "include_logs" => "all",
+        "doctor" => "true",
+        "workpad" => "true"
+      })
+      |> render_submit()
+
+    instruction_html =
+      view
+      |> element("#instruction-form")
+      |> render_submit(%{
+        "message" => "Check runtime saturation first",
+        "sync_linear" => "true",
+        "intent" => "append"
+      })
+
+    assert instruction_html =~ "Instruction queued for the next restart"
+    assert instruction_html =~ "Queued"
+
+    assert_receive {:profile_console_action, payload}
+    assert (payload["profile"] || payload[:profile]) == "ops-triage"
+    assert (payload["action"] || payload[:action]) == "instruction"
+
+    steer_html =
+      view
+      |> element("#instruction-form")
+      |> render_submit(%{
+        "message" => "Switch to a tighter recovery path and restart with the new direction",
+        "sync_linear" => "true",
+        "intent" => "steer"
+      })
+
+    assert steer_html =~ "Instruction queued and restart requested"
+    assert steer_html =~ "Restart requested"
+    assert steer_html =~ "steer"
+
+    assert_receive {:profile_console_action, steer_payload}
+    assert (steer_payload["profile"] || steer_payload[:profile]) == "ops-triage"
+    assert (steer_payload["action"] || steer_payload[:action]) == "steer"
   end
 
   test "http server serves embedded assets, accepts form posts, and rejects invalid hosts" do

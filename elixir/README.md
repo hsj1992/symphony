@@ -155,8 +155,9 @@ codex:
 
 The observability UI now runs on a minimal Phoenix stack:
 
-- LiveView for the dashboard at `/`
-- LiveView bridge console at `/console`
+- Unified LiveView operator cockpit at `/`
+- `/console` kept as an alias to the same cockpit
+- Legacy runtime-only dashboard at `/dashboard`
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
@@ -175,6 +176,37 @@ export SYMPHONY_CONSOLE_ADAPTER_BASE_URL="http://127.0.0.1:4211/api/v1/symphony"
 export SYMPHONY_CONSOLE_ADAPTER_TOKEN="replace-with-your-bridge-token"
 ```
 
+If you want one console to switch between multiple project adapters, provide a JSON array instead:
+
+```bash
+export ALPHA_BRIDGE_TOKEN="replace-alpha-token"
+export BETA_BRIDGE_TOKEN="replace-beta-token"
+export SYMPHONY_CONSOLE_ADAPTERS_JSON='[
+  {
+    "id": "alpha",
+    "label": "Alpha Project",
+    "base_url": "http://127.0.0.1:4211/api/v1/symphony",
+    "token_env": "ALPHA_BRIDGE_TOKEN"
+  },
+  {
+    "id": "beta",
+    "label": "Beta Project",
+    "base_url": "http://127.0.0.1:4311/api/v1/symphony",
+    "token_env": "BETA_BRIDGE_TOKEN"
+  }
+]'
+```
+
+When multiple adapters are configured, the console shows a project switcher and also accepts
+`/console?adapter=<id>`.
+
+If a project bridge exposes `profiles` in `/api/v1/symphony/meta`, the console also shows a
+profile switcher. Profiles can provide:
+
+- localized labels and descriptions
+- default console settings such as event count, log mode, doctor/workpad inclusion, and Linear sync
+- an instruction template that pre-fills the action composer when a profile is selected
+
 For a split deployment that keeps workflow tooling outside the product application, the recommended topology is:
 
 - `Symphony console` on `http://127.0.0.1:4100`
@@ -186,8 +218,9 @@ still letting the console inspect and control project workflow state.
 
 Then open:
 
-- `http://127.0.0.1:<port>/` for runtime observability
-- `http://127.0.0.1:<port>/console` for the bridge-backed console
+- `http://127.0.0.1:<port>/` for the unified operator cockpit
+- `http://127.0.0.1:<port>/console` as a compatible alias
+- `http://127.0.0.1:<port>/dashboard` for the legacy runtime-only view
 
 ## Project Layout
 

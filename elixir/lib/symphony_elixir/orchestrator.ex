@@ -12,6 +12,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @rework_command_regex ~r/\/rework\b/i
+  @auto_rework_ack_marker "symphony:auto-rework"
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -38,6 +40,8 @@ defmodule SymphonyElixir.Orchestrator do
       running: %{},
       completed: MapSet.new(),
       claimed: MapSet.new(),
+      held_issues: %{},
+      handled_rework_commands: %{},
       retry_attempts: %{},
       codex_totals: nil,
       codex_rate_limits: nil,
@@ -111,6 +115,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
+    state = reconcile_review_rework_commands(state)
     state = maybe_dispatch(state)
     state = schedule_tick(state, state.poll_interval_ms)
     state = %{state | poll_check_in_progress: false}
@@ -278,6 +283,169 @@ defmodule SymphonyElixir.Orchestrator do
         state
     end
   end
+
+  defp reconcile_review_rework_commands(%State{} = state) do
+    case Tracker.fetch_issues_by_states(["Human Review"]) do
+      {:ok, issues} ->
+        Enum.reduce(issues, state, &maybe_route_human_review_issue_to_rework/2)
+
+      {:error, reason} ->
+        Logger.debug("Failed to scan Human Review issues for /rework commands: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp maybe_route_human_review_issue_to_rework(%Issue{} = issue, %State{} = state) do
+    case latest_rework_feedback_comment(issue) do
+      nil ->
+        clear_handled_rework_command(state, issue.id)
+
+      comment ->
+        maybe_apply_rework_command(issue, comment, state)
+    end
+  end
+
+  defp maybe_route_human_review_issue_to_rework(_issue, state), do: state
+
+  defp maybe_apply_rework_command(%Issue{id: issue_id} = issue, comment, %State{} = state)
+       when is_binary(issue_id) do
+    marker = rework_comment_marker(comment)
+
+    if Map.get(state.handled_rework_commands, issue_id) == marker do
+      state
+    else
+      case Tracker.update_issue_state(issue_id, "Rework") do
+        :ok ->
+          ack_body = build_rework_ack_comment(issue, comment)
+
+          case Tracker.create_comment(issue_id, ack_body) do
+            :ok ->
+              Logger.info("Auto-routed #{issue_context(issue)} from Human Review to Rework via /rework comment")
+
+            {:error, reason} ->
+              Logger.warning("Moved #{issue_context(issue)} to Rework but failed to write ack comment: #{inspect(reason)}")
+          end
+
+          put_handled_rework_command(state, issue_id, marker)
+
+        {:error, reason} ->
+          Logger.warning("Failed to auto-route #{issue_context(issue)} to Rework from /rework comment: #{inspect(reason)}")
+          state
+      end
+    end
+  end
+
+  defp maybe_apply_rework_command(_issue, _comment, state), do: state
+
+  defp latest_rework_feedback_comment(%Issue{feedback_comments: comments}) when is_list(comments) do
+    comments
+    |> Enum.sort_by(&feedback_comment_timestamp/1, :asc)
+    |> Enum.reduce({[], MapSet.new()}, fn comment, {rework_comments, handled_markers} ->
+      cond do
+        auto_rework_ack_comment?(comment) ->
+          {rework_comments, mark_handled_rework_comments(comment, rework_comments, handled_markers)}
+
+        rework_feedback_comment?(comment) ->
+          {[comment | rework_comments], handled_markers}
+
+        true ->
+          {rework_comments, handled_markers}
+      end
+    end)
+    |> then(fn {rework_comments, handled_markers} ->
+      rework_comments
+      |> Enum.reject(fn comment -> MapSet.member?(handled_markers, rework_comment_marker(comment)) end)
+      |> Enum.sort_by(&feedback_comment_timestamp/1, :desc)
+      |> List.first()
+    end)
+  end
+
+  defp latest_rework_feedback_comment(_issue), do: nil
+
+  defp rework_comment_marker(comment) when is_map(comment) do
+    {
+      Map.get(comment, :updated_at) || Map.get(comment, "updated_at") || "",
+      Map.get(comment, :body) || Map.get(comment, "body") || ""
+    }
+  end
+
+  defp feedback_comment_timestamp(comment) when is_map(comment) do
+    Map.get(comment, :updated_at) || Map.get(comment, "updated_at") || ""
+  end
+
+  defp rework_feedback_comment?(%{body: body}) when is_binary(body),
+    do: Regex.match?(@rework_command_regex, body)
+
+  defp rework_feedback_comment?(_comment), do: false
+
+  defp auto_rework_ack_comment?(comment) when is_map(comment) do
+    body = Map.get(comment, :body) || Map.get(comment, "body") || ""
+    is_binary(body) and (String.contains?(body, @auto_rework_ack_marker) or String.contains?(body, "Detected `/rework` in the latest Human Review comment"))
+  end
+
+  defp mark_handled_rework_comments(comment, rework_comments, handled_markers) do
+    body = Map.get(comment, :body) || Map.get(comment, "body") || ""
+
+    case Regex.run(~r/source_updated_at=([^\s>]+)/, body) do
+      [_, source_updated_at] ->
+        matching_marker =
+          Enum.find_value(rework_comments, fn rework_comment ->
+            marker = rework_comment_marker(rework_comment)
+
+            case marker do
+              {^source_updated_at, _body} -> marker
+              _ -> nil
+            end
+          end)
+
+        if matching_marker do
+          MapSet.put(handled_markers, matching_marker)
+        else
+          handled_markers
+        end
+
+      _ ->
+        case rework_comments do
+          [latest_rework | _] -> MapSet.put(handled_markers, rework_comment_marker(latest_rework))
+          _ -> handled_markers
+        end
+    end
+  end
+
+  defp build_rework_ack_comment(%Issue{identifier: identifier}, comment) do
+    author =
+      case Map.get(comment, :author) || Map.get(comment, "author") do
+        value when is_binary(value) and value != "" -> value
+        _ -> "human reviewer"
+      end
+
+    body =
+      case Map.get(comment, :body) || Map.get(comment, "body") do
+        value when is_binary(value) -> value
+        _ -> ""
+      end
+
+    """
+    <!-- #{@auto_rework_ack_marker} source_updated_at=#{Map.get(comment, :updated_at) || Map.get(comment, "updated_at") || ""} -->
+    Detected `/rework` in the latest Human Review comment from #{author}.
+
+    Auto-moving #{identifier} back to `Rework` and resuming implementation from the updated feedback.
+
+    Feedback excerpt:
+    #{String.trim(body)}
+    """
+    |> String.trim()
+  end
+
+  defp put_handled_rework_command(%State{} = state, issue_id, marker) when is_binary(issue_id) do
+    %{state | handled_rework_commands: Map.put(state.handled_rework_commands, issue_id, marker)}
+  end
+
+  defp clear_handled_rework_command(%State{} = state, issue_id) when is_binary(issue_id) do
+    %{state | handled_rework_commands: Map.delete(state.handled_rework_commands, issue_id)}
+  end
+
+  defp clear_handled_rework_command(%State{} = state, _issue_id), do: state
 
   defp reconcile_running_issues(%State{} = state) do
     state = reconcile_stalled_running_issues(state)
@@ -560,13 +728,14 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp should_dispatch_issue?(
          %Issue{} = issue,
-         %State{running: running, claimed: claimed} = state,
+         %State{running: running, claimed: claimed, held_issues: held_issues} = state,
          active_states,
          terminal_states
        ) do
     candidate_issue?(issue, active_states, terminal_states) and
       !todo_issue_blocked_by_non_terminal?(issue, terminal_states) and
       !MapSet.member?(claimed, issue.id) and
+      !Map.has_key?(held_issues, issue.id) and
       !Map.has_key?(running, issue.id) and
       available_slots(state) > 0 and
       state_slots_available?(issue, running) and
@@ -715,6 +884,8 @@ defmodule SymphonyElixir.Orchestrator do
             worker_host: worker_host,
             workspace_path: nil,
             session_id: nil,
+            thread_id: nil,
+            turn_id: nil,
             last_codex_message: nil,
             last_codex_timestamp: nil,
             last_codex_event: nil,
@@ -834,32 +1005,39 @@ defmodule SymphonyElixir.Orchestrator do
   end
 
   defp handle_retry_issue(%State{} = state, issue_id, attempt, metadata) do
-    if state.paused do
-      {:noreply,
-       schedule_issue_retry(
-         state,
-         issue_id,
-         attempt,
-         Map.merge(metadata, %{error: "orchestrator paused", delay_type: :paused})
-       )}
-    else
-      case Tracker.fetch_candidate_issues() do
-        {:ok, issues} ->
-          issues
-          |> find_issue_by_id(issue_id)
-          |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
+    cond do
+      state.paused ->
+        {:noreply,
+         schedule_issue_retry(
+           state,
+           issue_id,
+           attempt,
+           Map.merge(metadata, %{error: "orchestrator paused", delay_type: :paused})
+         )}
 
-        {:error, reason} ->
-          Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
+      issue_manually_held?(state, issue_id) ->
+        Logger.info("Skipping retry for held issue issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}")
 
-          {:noreply,
-           schedule_issue_retry(
-             state,
-             issue_id,
-             attempt + 1,
-             Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
-           )}
-      end
+        {:noreply, release_issue_claim(state, issue_id)}
+
+      true ->
+        case Tracker.fetch_candidate_issues() do
+          {:ok, issues} ->
+            issues
+            |> find_issue_by_id(issue_id)
+            |> handle_retry_issue_lookup(state, issue_id, attempt, metadata)
+
+          {:error, reason} ->
+            Logger.warning("Retry poll failed for issue_id=#{issue_id} issue_identifier=#{metadata[:identifier] || issue_id}: #{inspect(reason)}")
+
+            {:noreply,
+             schedule_issue_retry(
+               state,
+               issue_id,
+               attempt + 1,
+               Map.merge(metadata, %{error: "retry poll failed: #{inspect(reason)}"})
+             )}
+        end
     end
   end
 
@@ -867,6 +1045,11 @@ defmodule SymphonyElixir.Orchestrator do
     terminal_states = terminal_state_set()
 
     cond do
+      issue_manually_held?(state, issue_id) ->
+        Logger.info("Issue is manually held: issue_id=#{issue_id} issue_identifier=#{issue.identifier}; skipping retry dispatch")
+
+        {:noreply, release_issue_claim(state, issue_id)}
+
       terminal_issue_state?(issue.state, terminal_states) ->
         Logger.info("Issue state is terminal: issue_id=#{issue_id} issue_identifier=#{issue.identifier} state=#{issue.state}; removing associated workspace")
 
@@ -896,29 +1079,15 @@ defmodule SymphonyElixir.Orchestrator do
 
   defp cleanup_issue_workspace(_identifier, _worker_host), do: :ok
 
-  defp run_terminal_workspace_cleanup do
-    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
-      {:ok, issues} ->
-        issues
-        |> Enum.each(fn
-          %Issue{identifier: identifier} when is_binary(identifier) ->
-            cleanup_issue_workspace(identifier)
-
-          _ ->
-            :ok
-        end)
-
-      {:error, reason} ->
-        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
-    end
+  defp issue_manually_held?(%State{} = state, issue_id) when is_binary(issue_id) do
+    Map.has_key?(state.held_issues, issue_id)
   end
 
-  defp notify_dashboard do
-    StatusDashboard.notify_update()
-  end
+  defp issue_manually_held?(_state, _issue_id), do: false
 
   defp handle_active_retry(state, issue, attempt, metadata) do
     if retry_candidate_issue?(issue, terminal_state_set()) and
+         !issue_manually_held?(state, issue.id) and
          dispatch_slots_available?(issue, state) and
          worker_slots_available?(state, metadata[:worker_host]) do
       {:noreply, dispatch_issue(state, issue, attempt, metadata[:worker_host])}
@@ -942,15 +1111,60 @@ defmodule SymphonyElixir.Orchestrator do
     %{state | claimed: MapSet.delete(state.claimed, issue_id)}
   end
 
+  defp release_issue_claim_and_retry(%State{} = state, issue_id) do
+    state
+    |> drop_retry_attempt(issue_id)
+    |> release_issue_claim(issue_id)
+  end
+
+  defp drop_retry_attempt(%State{} = state, issue_id) do
+    case Map.get(state.retry_attempts, issue_id) do
+      %{timer_ref: timer_ref} when is_reference(timer_ref) ->
+        Process.cancel_timer(timer_ref)
+        %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}
+
+      %{timer_ref: _timer_ref} ->
+        %{state | retry_attempts: Map.delete(state.retry_attempts, issue_id)}
+
+      _ ->
+        state
+    end
+  end
+
+  defp run_terminal_workspace_cleanup do
+    case Tracker.fetch_issues_by_states(Config.settings!().tracker.terminal_states) do
+      {:ok, issues} ->
+        issues
+        |> Enum.each(fn
+          %Issue{identifier: identifier} when is_binary(identifier) ->
+            cleanup_issue_workspace(identifier)
+
+          _ ->
+            :ok
+        end)
+
+      {:error, reason} ->
+        Logger.warning("Skipping startup terminal workspace cleanup; failed to fetch terminal issues: #{inspect(reason)}")
+    end
+  end
+
+  defp notify_dashboard do
+    StatusDashboard.notify_update()
+  end
+
   defp retry_delay(attempt, metadata) when is_integer(attempt) and attempt > 0 and is_map(metadata) do
-    if metadata[:delay_type] == :paused do
-      5_000
-    else
-      if metadata[:delay_type] == :continuation and attempt == 1 do
+    cond do
+      metadata[:delay_type] == :manual ->
+        0
+
+      metadata[:delay_type] == :paused ->
+        5_000
+
+      metadata[:delay_type] == :continuation and attempt == 1 ->
         @continuation_retry_delay_ms
-      else
+
+      true ->
         failure_retry_delay(attempt)
-      end
     end
   end
 
@@ -1132,6 +1346,22 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  @spec control_issue(String.t(), String.t(), String.t() | nil) ::
+          map() | {:error, :issue_not_found} | :unavailable
+  def control_issue(issue_identifier, action, reason \\ nil) do
+    control_issue(__MODULE__, issue_identifier, action, reason)
+  end
+
+  @spec control_issue(GenServer.server(), String.t(), String.t(), String.t() | nil) ::
+          map() | {:error, :issue_not_found} | :unavailable
+  def control_issue(server, issue_identifier, action, reason) do
+    if Process.whereis(server) do
+      GenServer.call(server, {:issue_control, issue_identifier, action, reason})
+    else
+      :unavailable
+    end
+  end
+
   @impl true
   def handle_call(:snapshot, _from, state) do
     state = refresh_runtime_config(state)
@@ -1148,6 +1378,8 @@ defmodule SymphonyElixir.Orchestrator do
           worker_host: Map.get(metadata, :worker_host),
           workspace_path: Map.get(metadata, :workspace_path),
           session_id: metadata.session_id,
+          thread_id: Map.get(metadata, :thread_id),
+          turn_id: Map.get(metadata, :turn_id),
           codex_app_server_pid: metadata.codex_app_server_pid,
           codex_input_tokens: metadata.codex_input_tokens,
           codex_output_tokens: metadata.codex_output_tokens,
@@ -1184,7 +1416,18 @@ defmodule SymphonyElixir.Orchestrator do
        control: %{
          paused: state.paused == true,
          paused_at: control_iso8601(state.paused_at),
-         pause_reason: state.pause_reason
+         pause_reason: state.pause_reason,
+         issue_holds:
+           state.held_issues
+           |> Enum.map(fn {issue_id, hold} ->
+             %{
+               issue_id: issue_id,
+               issue_identifier: Map.get(hold, :identifier),
+               held_at: control_iso8601(Map.get(hold, :held_at)),
+               reason: Map.get(hold, :reason)
+             }
+           end)
+           |> Enum.sort_by(&(&1.issue_identifier || &1.issue_id || ""))
        },
        polling: %{
          checking?: state.poll_check_in_progress == true,
@@ -1231,6 +1474,53 @@ defmodule SymphonyElixir.Orchestrator do
     end
   end
 
+  def handle_call({:issue_control, issue_identifier, action, reason}, _from, state) do
+    requested_at = DateTime.utc_now()
+    normalized_reason = normalize_control_reason(reason)
+
+    case normalize_issue_control_action(action) do
+      :cancel ->
+        case cancel_issue_run(state, issue_identifier, normalized_reason) do
+          {:ok, next_state, payload} ->
+            notify_dashboard()
+            {:reply, Map.put(payload, :requested_at, requested_at), next_state}
+
+          {:error, :issue_not_found} ->
+            {:reply, {:error, :issue_not_found}, state}
+        end
+
+      :hold ->
+        case hold_issue(state, issue_identifier, normalized_reason, requested_at) do
+          {:ok, next_state, payload} ->
+            notify_dashboard()
+            {:reply, Map.put(payload, :requested_at, requested_at), next_state}
+
+          {:error, :issue_not_found} ->
+            {:reply, {:error, :issue_not_found}, state}
+        end
+
+      :release ->
+        case release_issue_hold(state, issue_identifier, normalized_reason, requested_at) do
+          {:ok, next_state, payload} ->
+            notify_dashboard()
+            {:reply, Map.put(payload, :requested_at, requested_at), next_state}
+
+          {:error, :issue_not_found} ->
+            {:reply, {:error, :issue_not_found}, state}
+        end
+
+      :restart ->
+        case restart_issue_now(state, issue_identifier, normalized_reason) do
+          {:ok, next_state, payload} ->
+            notify_dashboard()
+            {:reply, Map.put(payload, :requested_at, requested_at), next_state}
+
+          {:error, :issue_not_found} ->
+            {:reply, {:error, :issue_not_found}, state}
+        end
+    end
+  end
+
   def handle_call(:request_refresh, _from, state) do
     now_ms = System.monotonic_time(:millisecond)
     already_due? = is_integer(state.next_poll_due_at_ms) and state.next_poll_due_at_ms <= now_ms
@@ -1262,6 +1552,8 @@ defmodule SymphonyElixir.Orchestrator do
         last_codex_timestamp: timestamp,
         last_codex_message: summarize_codex_update(update),
         session_id: session_id_for_update(running_entry.session_id, update),
+        thread_id: thread_id_for_update(Map.get(running_entry, :thread_id), update),
+        turn_id: turn_id_for_update(Map.get(running_entry, :turn_id), update),
         last_codex_event: event,
         codex_app_server_pid: codex_app_server_pid_for_update(codex_app_server_pid, update),
         codex_input_tokens: codex_input_tokens + token_delta.input_tokens,
@@ -1293,6 +1585,16 @@ defmodule SymphonyElixir.Orchestrator do
     do: session_id
 
   defp session_id_for_update(existing, _update), do: existing
+
+  defp thread_id_for_update(_existing, %{thread_id: thread_id}) when is_binary(thread_id),
+    do: thread_id
+
+  defp thread_id_for_update(existing, _update), do: existing
+
+  defp turn_id_for_update(_existing, %{turn_id: turn_id}) when is_binary(turn_id),
+    do: turn_id
+
+  defp turn_id_for_update(existing, _update), do: existing
 
   defp turn_count_for_update(existing_count, existing_session_id, %{
          event: :session_started,
@@ -1722,6 +2024,11 @@ defmodule SymphonyElixir.Orchestrator do
   defp normalize_control_action("pause"), do: :pause
   defp normalize_control_action("resume"), do: :resume
 
+  defp normalize_issue_control_action("cancel"), do: :cancel
+  defp normalize_issue_control_action("hold"), do: :hold
+  defp normalize_issue_control_action("release"), do: :release
+  defp normalize_issue_control_action("restart"), do: :restart
+
   defp normalize_control_reason(reason) when is_binary(reason) do
     case String.trim(reason) do
       "" -> nil
@@ -1741,6 +2048,400 @@ defmodule SymphonyElixir.Orchestrator do
       paused_at: control_iso8601(state.paused_at)
     }
   end
+
+  defp hold_issue(%State{} = state, issue_identifier, reason, requested_at)
+       when is_binary(issue_identifier) do
+    identifier = String.trim(issue_identifier)
+
+    case resolve_issue_control_target(state, identifier) do
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "running"} ->
+        next_state =
+          state
+          |> terminate_running_issue(issue_id, false)
+          |> put_issue_hold(issue_id, resolved_identifier, requested_at, reason)
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "hold",
+           status: "held",
+           scope: "running",
+           changed: true,
+           operations: ["terminate_running_agent", "hold_issue"],
+           reason: reason
+         }}
+
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "retrying"} ->
+        next_state =
+          state
+          |> release_issue_claim_and_retry(issue_id)
+          |> put_issue_hold(issue_id, resolved_identifier, requested_at, reason)
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "hold",
+           status: "held",
+           scope: "retrying",
+           changed: true,
+           operations: ["cancel_retry", "hold_issue"],
+           reason: reason
+         }}
+
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "held"} ->
+        {:ok, state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "hold",
+           status: "held",
+           scope: "held",
+           changed: false,
+           operations: [],
+           reason: reason || held_issue_reason(state, issue_id)
+         }}
+
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "idle"} ->
+        next_state = put_issue_hold(state, issue_id, resolved_identifier, requested_at, reason)
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "hold",
+           status: "held",
+           scope: "idle",
+           changed: true,
+           operations: ["hold_issue"],
+           reason: reason
+         }}
+
+      {:error, :issue_not_found} ->
+        {:error, :issue_not_found}
+    end
+  end
+
+  defp cancel_issue_run(%State{} = state, issue_identifier, reason)
+       when is_binary(issue_identifier) do
+    identifier = String.trim(issue_identifier)
+
+    case resolve_issue_control_target(state, identifier) do
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "running"} ->
+        next_state = terminate_running_issue(state, issue_id, false)
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "cancel",
+           status: "cancelled",
+           scope: "running",
+           changed: true,
+           operations: ["terminate_running_agent", "cancel_current_run"],
+           reason: reason
+         }}
+
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, "retrying"} ->
+        next_state = release_issue_claim_and_retry(state, issue_id)
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "cancel",
+           status: "cancelled",
+           scope: "retrying",
+           changed: true,
+           operations: ["cancel_retry", "cancel_current_run"],
+           reason: reason
+         }}
+
+      {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, scope} ->
+        {:ok, state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "cancel",
+           status: "idle",
+           scope: scope,
+           changed: false,
+           operations: [],
+           reason: reason
+         }}
+
+      {:error, :issue_not_found} ->
+        {:error, :issue_not_found}
+    end
+  end
+
+  defp release_issue_hold(%State{} = state, issue_identifier, reason, requested_at)
+       when is_binary(issue_identifier) do
+    identifier = String.trim(issue_identifier)
+
+    case find_hold_entry_by_identifier(state.held_issues, identifier) do
+      %{issue_id: issue_id, identifier: resolved_identifier} ->
+        next_state =
+          state
+          |> drop_issue_hold(issue_id)
+          |> maybe_schedule_issue_release_poll()
+
+        operations =
+          if state.paused do
+            ["release_issue_hold"]
+          else
+            ["release_issue_hold", "poll"]
+          end
+
+        {:ok, next_state,
+         %{
+           issue_identifier: resolved_identifier,
+           issue_id: issue_id,
+           action: "release",
+           status: "active",
+           scope: "held",
+           changed: true,
+           operations: operations,
+           reason: reason,
+           released_at: requested_at
+         }}
+
+      nil ->
+        case resolve_issue_control_target(state, identifier) do
+          {:ok, %{issue_id: issue_id, identifier: resolved_identifier}, scope} ->
+            {:ok, state,
+             %{
+               issue_identifier: resolved_identifier,
+               issue_id: issue_id,
+               action: "release",
+               status: "active",
+               scope: scope,
+               changed: false,
+               operations: [],
+               reason: reason,
+               released_at: requested_at
+             }}
+
+          {:error, :issue_not_found} ->
+            {:error, :issue_not_found}
+        end
+    end
+  end
+
+  defp resolve_issue_control_target(%State{} = state, identifier) do
+    cond do
+      running_entry = find_running_entry_by_identifier(state.running, identifier) ->
+        {:ok, %{issue_id: running_entry.issue.id, identifier: running_entry.identifier}, "running"}
+
+      retry_entry = find_retry_entry_by_identifier(state.retry_attempts, identifier) ->
+        {:ok, %{issue_id: retry_entry.issue_id, identifier: retry_entry.identifier}, "retrying"}
+
+      hold_entry = find_hold_entry_by_identifier(state.held_issues, identifier) ->
+        {:ok, %{issue_id: hold_entry.issue_id, identifier: hold_entry.identifier}, "held"}
+
+      issue = find_candidate_issue_by_identifier(identifier) ->
+        {:ok, %{issue_id: issue.id, identifier: issue.identifier}, "idle"}
+
+      true ->
+        {:error, :issue_not_found}
+    end
+  end
+
+  defp find_candidate_issue_by_identifier(identifier) when is_binary(identifier) do
+    case Tracker.fetch_candidate_issues() do
+      {:ok, issues} ->
+        Enum.find(issues, fn
+          %Issue{identifier: ^identifier} -> true
+          _ -> false
+        end)
+
+      {:error, _reason} ->
+        nil
+    end
+  end
+
+  defp find_candidate_issue_by_identifier(_identifier), do: nil
+
+  defp put_issue_hold(%State{} = state, issue_id, identifier, held_at, reason) do
+    hold = %{
+      identifier: identifier,
+      held_at: held_at,
+      reason: reason
+    }
+
+    %{state | held_issues: Map.put(state.held_issues, issue_id, hold)}
+  end
+
+  defp drop_issue_hold(%State{} = state, issue_id) do
+    %{state | held_issues: Map.delete(state.held_issues, issue_id)}
+  end
+
+  defp maybe_schedule_issue_release_poll(%State{paused: true} = state), do: state
+  defp maybe_schedule_issue_release_poll(%State{} = state), do: schedule_tick(state, 0)
+
+  defp held_issue_reason(%State{} = state, issue_id) do
+    case Map.get(state.held_issues, issue_id) do
+      %{reason: reason} -> reason
+      _ -> nil
+    end
+  end
+
+  defp restart_issue_now(%State{} = state, issue_identifier, reason)
+       when is_binary(issue_identifier) do
+    identifier = String.trim(issue_identifier)
+
+    cond do
+      running_entry = find_running_entry_by_identifier(state.running, identifier) ->
+        issue_id = running_entry.issue.id
+        next_attempt = next_retry_attempt_from_running(running_entry) || 1
+
+        next_state =
+          state
+          |> terminate_running_issue(issue_id, false)
+          |> schedule_issue_retry(issue_id, next_attempt, %{
+            identifier: running_entry.identifier,
+            error: restart_error(reason),
+            worker_host: Map.get(running_entry, :worker_host),
+            workspace_path: Map.get(running_entry, :workspace_path),
+            delay_type: :manual
+          })
+
+        {:ok, next_state,
+         %{
+           issue_identifier: running_entry.identifier,
+           issue_id: issue_id,
+           action: "restart",
+           status: "scheduled",
+           scope: "running",
+           changed: true,
+           operations: ["terminate_running_agent", "schedule_immediate_retry"],
+           reason: reason
+         }}
+
+      retry_entry = find_retry_entry_by_identifier(state.retry_attempts, identifier) ->
+        issue_id = retry_entry.issue_id
+
+        next_state =
+          schedule_issue_retry(state, issue_id, retry_entry.attempt, %{
+            identifier: retry_entry.identifier,
+            error: restart_error(reason),
+            worker_host: Map.get(retry_entry, :worker_host),
+            workspace_path: Map.get(retry_entry, :workspace_path),
+            delay_type: :manual
+          })
+
+        {:ok, next_state,
+         %{
+           issue_identifier: retry_entry.identifier,
+           issue_id: issue_id,
+           action: "restart",
+           status: "scheduled",
+           scope: "retrying",
+           changed: true,
+           operations: ["reschedule_retry_now"],
+           reason: reason
+         }}
+
+      issue = find_candidate_issue_by_identifier(identifier) ->
+        cond do
+          Map.has_key?(state.held_issues, issue.id) ->
+            {:ok, state,
+             %{
+               issue_identifier: issue.identifier,
+               issue_id: issue.id,
+               action: "restart",
+               status: "held",
+               scope: "held",
+               changed: false,
+               operations: [],
+               reason: reason
+             }}
+
+          state.paused == true ->
+            {:ok, state,
+             %{
+               issue_identifier: issue.identifier,
+               issue_id: issue.id,
+               action: "restart",
+               status: "blocked",
+               scope: "idle",
+               changed: false,
+               operations: [],
+               reason: reason
+             }}
+
+          dispatch_slots_available?(issue, state) and worker_slots_available?(state) ->
+            next_state = dispatch_issue(state, issue)
+
+            {:ok, next_state,
+             %{
+               issue_identifier: issue.identifier,
+               issue_id: issue.id,
+               action: "restart",
+               status: "scheduled",
+               scope: "idle",
+               changed: true,
+               operations: ["dispatch_issue_now"],
+               reason: reason
+             }}
+
+          true ->
+            next_state = schedule_tick(state, 0)
+
+            {:ok, next_state,
+             %{
+               issue_identifier: issue.identifier,
+               issue_id: issue.id,
+               action: "restart",
+               status: "queued",
+               scope: "idle",
+               changed: true,
+               operations: ["poll", "reconcile"],
+               reason: reason
+             }}
+        end
+
+      true ->
+        {:error, :issue_not_found}
+    end
+  end
+
+  defp restart_error(nil), do: "manual restart requested"
+  defp restart_error(reason), do: "manual restart requested: #{reason}"
+
+  defp find_running_entry_by_identifier(running, identifier) when is_map(running) do
+    Enum.find_value(running, fn
+      {_issue_id, %{identifier: ^identifier} = running_entry} -> running_entry
+      _ -> nil
+    end)
+  end
+
+  defp find_running_entry_by_identifier(_running, _identifier), do: nil
+
+  defp find_retry_entry_by_identifier(retry_attempts, identifier) when is_map(retry_attempts) do
+    Enum.find_value(retry_attempts, fn
+      {issue_id, %{identifier: ^identifier} = retry_entry} ->
+        Map.put(retry_entry, :issue_id, issue_id)
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp find_retry_entry_by_identifier(_retry_attempts, _identifier), do: nil
+
+  defp find_hold_entry_by_identifier(held_issues, identifier) when is_map(held_issues) do
+    Enum.find_value(held_issues, fn
+      {issue_id, %{identifier: ^identifier} = hold_entry} ->
+        Map.put(hold_entry, :issue_id, issue_id)
+
+      _ ->
+        nil
+    end)
+  end
+
+  defp find_hold_entry_by_identifier(_held_issues, _identifier), do: nil
 
   defp cancel_tick(%State{tick_timer_ref: nil} = state), do: state
 
