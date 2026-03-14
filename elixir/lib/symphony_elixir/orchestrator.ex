@@ -12,6 +12,8 @@ defmodule SymphonyElixir.Orchestrator do
 
   @continuation_retry_delay_ms 1_000
   @failure_retry_base_ms 10_000
+  @rework_command_regex ~r/\/rework\b/i
+  @auto_rework_ack_marker "symphony:auto-rework"
   # Slightly above the dashboard render interval so "checking now…" can render.
   @poll_transition_render_delay_ms 20
   @empty_codex_totals %{
@@ -39,6 +41,7 @@ defmodule SymphonyElixir.Orchestrator do
       completed: MapSet.new(),
       claimed: MapSet.new(),
       held_issues: %{},
+      handled_rework_commands: %{},
       retry_attempts: %{},
       codex_totals: nil,
       codex_rate_limits: nil,
@@ -112,6 +115,7 @@ defmodule SymphonyElixir.Orchestrator do
 
   def handle_info(:run_poll_cycle, state) do
     state = refresh_runtime_config(state)
+    state = reconcile_review_rework_commands(state)
     state = maybe_dispatch(state)
     state = schedule_tick(state, state.poll_interval_ms)
     state = %{state | poll_check_in_progress: false}
@@ -279,6 +283,169 @@ defmodule SymphonyElixir.Orchestrator do
         state
     end
   end
+
+  defp reconcile_review_rework_commands(%State{} = state) do
+    case Tracker.fetch_issues_by_states(["Human Review"]) do
+      {:ok, issues} ->
+        Enum.reduce(issues, state, &maybe_route_human_review_issue_to_rework/2)
+
+      {:error, reason} ->
+        Logger.debug("Failed to scan Human Review issues for /rework commands: #{inspect(reason)}")
+        state
+    end
+  end
+
+  defp maybe_route_human_review_issue_to_rework(%Issue{} = issue, %State{} = state) do
+    case latest_rework_feedback_comment(issue) do
+      nil ->
+        clear_handled_rework_command(state, issue.id)
+
+      comment ->
+        maybe_apply_rework_command(issue, comment, state)
+    end
+  end
+
+  defp maybe_route_human_review_issue_to_rework(_issue, state), do: state
+
+  defp maybe_apply_rework_command(%Issue{id: issue_id} = issue, comment, %State{} = state)
+       when is_binary(issue_id) do
+    marker = rework_comment_marker(comment)
+
+    if Map.get(state.handled_rework_commands, issue_id) == marker do
+      state
+    else
+      case Tracker.update_issue_state(issue_id, "Rework") do
+        :ok ->
+          ack_body = build_rework_ack_comment(issue, comment)
+
+          case Tracker.create_comment(issue_id, ack_body) do
+            :ok ->
+              Logger.info("Auto-routed #{issue_context(issue)} from Human Review to Rework via /rework comment")
+
+            {:error, reason} ->
+              Logger.warning("Moved #{issue_context(issue)} to Rework but failed to write ack comment: #{inspect(reason)}")
+          end
+
+          put_handled_rework_command(state, issue_id, marker)
+
+        {:error, reason} ->
+          Logger.warning("Failed to auto-route #{issue_context(issue)} to Rework from /rework comment: #{inspect(reason)}")
+          state
+      end
+    end
+  end
+
+  defp maybe_apply_rework_command(_issue, _comment, state), do: state
+
+  defp latest_rework_feedback_comment(%Issue{feedback_comments: comments}) when is_list(comments) do
+    comments
+    |> Enum.sort_by(&feedback_comment_timestamp/1, :asc)
+    |> Enum.reduce({[], MapSet.new()}, fn comment, {rework_comments, handled_markers} ->
+      cond do
+        auto_rework_ack_comment?(comment) ->
+          {rework_comments, mark_handled_rework_comments(comment, rework_comments, handled_markers)}
+
+        rework_feedback_comment?(comment) ->
+          {[comment | rework_comments], handled_markers}
+
+        true ->
+          {rework_comments, handled_markers}
+      end
+    end)
+    |> then(fn {rework_comments, handled_markers} ->
+      rework_comments
+      |> Enum.reject(fn comment -> MapSet.member?(handled_markers, rework_comment_marker(comment)) end)
+      |> Enum.sort_by(&feedback_comment_timestamp/1, :desc)
+      |> List.first()
+    end)
+  end
+
+  defp latest_rework_feedback_comment(_issue), do: nil
+
+  defp rework_comment_marker(comment) when is_map(comment) do
+    {
+      Map.get(comment, :updated_at) || Map.get(comment, "updated_at") || "",
+      Map.get(comment, :body) || Map.get(comment, "body") || ""
+    }
+  end
+
+  defp feedback_comment_timestamp(comment) when is_map(comment) do
+    Map.get(comment, :updated_at) || Map.get(comment, "updated_at") || ""
+  end
+
+  defp rework_feedback_comment?(%{body: body}) when is_binary(body),
+    do: Regex.match?(@rework_command_regex, body)
+
+  defp rework_feedback_comment?(_comment), do: false
+
+  defp auto_rework_ack_comment?(comment) when is_map(comment) do
+    body = Map.get(comment, :body) || Map.get(comment, "body") || ""
+    is_binary(body) and (String.contains?(body, @auto_rework_ack_marker) or String.contains?(body, "Detected `/rework` in the latest Human Review comment"))
+  end
+
+  defp mark_handled_rework_comments(comment, rework_comments, handled_markers) do
+    body = Map.get(comment, :body) || Map.get(comment, "body") || ""
+
+    case Regex.run(~r/source_updated_at=([^\s>]+)/, body) do
+      [_, source_updated_at] ->
+        matching_marker =
+          Enum.find_value(rework_comments, fn rework_comment ->
+            marker = rework_comment_marker(rework_comment)
+
+            case marker do
+              {^source_updated_at, _body} -> marker
+              _ -> nil
+            end
+          end)
+
+        if matching_marker do
+          MapSet.put(handled_markers, matching_marker)
+        else
+          handled_markers
+        end
+
+      _ ->
+        case rework_comments do
+          [latest_rework | _] -> MapSet.put(handled_markers, rework_comment_marker(latest_rework))
+          _ -> handled_markers
+        end
+    end
+  end
+
+  defp build_rework_ack_comment(%Issue{identifier: identifier}, comment) do
+    author =
+      case Map.get(comment, :author) || Map.get(comment, "author") do
+        value when is_binary(value) and value != "" -> value
+        _ -> "human reviewer"
+      end
+
+    body =
+      case Map.get(comment, :body) || Map.get(comment, "body") do
+        value when is_binary(value) -> value
+        _ -> ""
+      end
+
+    """
+    <!-- #{@auto_rework_ack_marker} source_updated_at=#{Map.get(comment, :updated_at) || Map.get(comment, "updated_at") || ""} -->
+    Detected `/rework` in the latest Human Review comment from #{author}.
+
+    Auto-moving #{identifier} back to `Rework` and resuming implementation from the updated feedback.
+
+    Feedback excerpt:
+    #{String.trim(body)}
+    """
+    |> String.trim()
+  end
+
+  defp put_handled_rework_command(%State{} = state, issue_id, marker) when is_binary(issue_id) do
+    %{state | handled_rework_commands: Map.put(state.handled_rework_commands, issue_id, marker)}
+  end
+
+  defp clear_handled_rework_command(%State{} = state, issue_id) when is_binary(issue_id) do
+    %{state | handled_rework_commands: Map.delete(state.handled_rework_commands, issue_id)}
+  end
+
+  defp clear_handled_rework_command(%State{} = state, _issue_id), do: state
 
   defp reconcile_running_issues(%State{} = state) do
     state = reconcile_stalled_running_issues(state)

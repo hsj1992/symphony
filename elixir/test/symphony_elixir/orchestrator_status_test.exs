@@ -48,6 +48,74 @@ defmodule SymphonyElixir.OrchestratorStatusTest do
     assert %{control: %{paused: false, pause_reason: nil}} = resumed_snapshot
   end
 
+  test "human review comment with /rework auto-routes issue back to Rework once" do
+    previous_issues = Application.get_env(:symphony_elixir, :memory_tracker_issues)
+    previous_recipient = Application.get_env(:symphony_elixir, :memory_tracker_recipient)
+
+    on_exit(fn ->
+      Application.put_env(:symphony_elixir, :memory_tracker_issues, previous_issues || [])
+      Application.put_env(:symphony_elixir, :memory_tracker_recipient, previous_recipient)
+    end)
+
+    write_workflow_file!(
+      Workflow.workflow_file_path(),
+      tracker_kind: "memory",
+      tracker_api_token: nil,
+      poll_interval_ms: 50
+    )
+
+    Application.put_env(:symphony_elixir, :memory_tracker_recipient, self())
+
+    issue = %Issue{
+      id: "issue-human-review",
+      identifier: "MT-HR",
+      title: "Needs follow-up",
+      description: "Awaiting human review",
+      state: "Human Review",
+      feedback_comments: [
+        %{
+          author: "hsj1992",
+          body: "人工验收未通过，/rework 请继续修复导入统计问题。",
+          updated_at: "2026-03-14T10:00:00Z"
+        }
+      ]
+    }
+
+    Application.put_env(:symphony_elixir, :memory_tracker_issues, [issue])
+
+    orchestrator_name = Module.concat(__MODULE__, :HumanReviewReworkOrchestrator)
+    {:ok, pid} = Orchestrator.start_link(name: orchestrator_name)
+
+    on_exit(fn ->
+      if Process.alive?(pid) do
+        Process.exit(pid, :normal)
+      end
+    end)
+
+    assert_receive {:memory_tracker_state_update, "issue-human-review", "Rework"}, 1_500
+    assert_receive {:memory_tracker_comment, "issue-human-review", ack_body}, 1_500
+    assert ack_body =~ "/rework"
+    assert ack_body =~ "Auto-moving MT-HR back to `Rework`"
+
+    updated_issue =
+      Application.get_env(:symphony_elixir, :memory_tracker_issues, [])
+      |> Enum.find(fn
+        %Issue{id: "issue-human-review"} -> true
+        _ -> false
+      end)
+
+    assert %Issue{} = updated_issue
+
+    Application.put_env(
+      :symphony_elixir,
+      :memory_tracker_issues,
+      [%{updated_issue | state: "Human Review"}]
+    )
+
+    refute_receive {:memory_tracker_state_update, "issue-human-review", "Rework"}, 500
+    refute_receive {:memory_tracker_comment, "issue-human-review", _body}, 500
+  end
+
   test "issue-level restart control terminates a running worker and schedules immediate retry" do
     write_workflow_file!(Workflow.workflow_file_path(), tracker_api_token: nil, poll_interval_ms: 50)
 

@@ -371,6 +371,45 @@ defmodule SymphonyElixir.WorkspaceAndConfigTest do
     refute issue.assigned_to_worker
   end
 
+  test "linear client appends recent non-workpad comments into issue description" do
+    raw_issue = %{
+      "id" => "issue-88",
+      "identifier" => "MT-88",
+      "title" => "Needs rework",
+      "description" => "Original issue description.",
+      "state" => %{"name" => "Rework"},
+      "comments" => %{
+        "nodes" => [
+          %{
+            "body" => "## Codex Workpad / Codex 工作面板\n\nIgnore this workpad body.",
+            "updatedAt" => "2026-03-14T01:00:00Z",
+            "user" => %{"name" => "Codex"}
+          },
+          %{
+            "body" => "人工验收未通过：标签字段仍然丢失，请修复后重新验证。",
+            "updatedAt" => "2026-03-14T02:00:00Z",
+            "user" => %{"name" => "hsj1992"}
+          }
+        ]
+      }
+    }
+
+    issue = Client.normalize_issue_for_test(raw_issue, "user-1")
+
+    assert issue.feedback_comments == [
+             %{
+               author: "hsj1992",
+               body: "人工验收未通过：标签字段仍然丢失，请修复后重新验证。",
+               updated_at: "2026-03-14T02:00:00Z"
+             }
+           ]
+
+    assert issue.description =~ "Original issue description."
+    assert issue.description =~ "Recent non-workpad Linear comments:"
+    assert issue.description =~ "人工验收未通过：标签字段仍然丢失，请修复后重新验证。"
+    refute issue.description =~ "Ignore this workpad body."
+  end
+
   test "linear client pagination merge helper preserves issue ordering" do
     issue_page_1 = [
       %Issue{id: "issue-1", identifier: "MT-1"},

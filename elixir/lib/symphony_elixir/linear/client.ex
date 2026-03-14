@@ -8,6 +8,11 @@ defmodule SymphonyElixir.Linear.Client do
 
   @issue_page_size 50
   @max_error_body_log_bytes 1_000
+  @workpad_headers [
+    "## Codex Workpad / Codex 工作面板",
+    "## Codex Workpad",
+    "## Workpad"
+  ]
 
   @query """
   query SymphonyLinearPoll($projectSlug: String!, $stateNames: [String!]!, $first: Int!, $relationFirst: Int!, $after: String) {
@@ -23,6 +28,15 @@ defmodule SymphonyElixir.Linear.Client do
         }
         branchName
         url
+        comments(last: 20) {
+          nodes {
+            body
+            updatedAt
+            user {
+              name
+            }
+          }
+        }
         assignee {
           id
         }
@@ -68,6 +82,15 @@ defmodule SymphonyElixir.Linear.Client do
         }
         branchName
         url
+        comments(last: 20) {
+          nodes {
+            body
+            updatedAt
+            user {
+              name
+            }
+          }
+        }
         assignee {
           id
         }
@@ -447,18 +470,20 @@ defmodule SymphonyElixir.Linear.Client do
 
   defp normalize_issue(issue, assignee_filter) when is_map(issue) do
     assignee = issue["assignee"]
+    feedback_comments = extract_feedback_comments(issue)
 
     %Issue{
       id: issue["id"],
       identifier: issue["identifier"],
       title: issue["title"],
-      description: issue["description"],
+      description: merge_description_with_feedback(issue["description"], feedback_comments),
       priority: parse_priority(issue["priority"]),
       state: get_in(issue, ["state", "name"]),
       branch_name: issue["branchName"],
       url: issue["url"],
       assignee_id: assignee_field(assignee, "id"),
       blocked_by: extract_blockers(issue),
+      feedback_comments: feedback_comments,
       labels: extract_labels(issue),
       assigned_to_worker: assigned_to_worker?(assignee, assignee_filter),
       created_at: parse_datetime(issue["createdAt"]),
@@ -467,6 +492,96 @@ defmodule SymphonyElixir.Linear.Client do
   end
 
   defp normalize_issue(_issue, _assignee_filter), do: nil
+
+  defp extract_feedback_comments(issue) when is_map(issue) do
+    comments =
+      get_in(issue, ["comments", "nodes"])
+      |> List.wrap()
+
+    comments
+    |> Enum.filter(&is_map/1)
+    |> Enum.map(&normalize_feedback_comment/1)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.sort_by(&(&1.updated_at || ""), :desc)
+  end
+
+  defp normalize_feedback_comment(comment) when is_map(comment) do
+    body =
+      comment
+      |> Map.get("body")
+      |> normalize_comment_body()
+
+    cond do
+      body == "" ->
+        nil
+
+      workpad_comment?(body) ->
+        nil
+
+      true ->
+        %{
+          body: body,
+          author: get_in(comment, ["user", "name"]) || "",
+          updated_at: normalize_comment_timestamp(comment["updatedAt"])
+        }
+    end
+  end
+
+  defp merge_description_with_feedback(description, []), do: description
+
+  defp merge_description_with_feedback(description, feedback_comments) do
+    base =
+      case String.trim(to_string(description || "")) do
+        "" -> "No description provided."
+        value -> value
+      end
+
+    feedback_section =
+      feedback_comments
+      |> Enum.map_join("\n\n", fn comment ->
+        author =
+          case String.trim(to_string(comment[:author] || "")) do
+            "" -> "Unknown"
+            value -> value
+          end
+
+        updated_at =
+          case String.trim(to_string(comment[:updated_at] || "")) do
+            "" -> "unknown time"
+            value -> value
+          end
+
+        "- [#{updated_at}] #{author}:\n#{comment[:body]}"
+      end)
+
+    base <>
+      "\n\nRecent non-workpad Linear comments:\n" <>
+      feedback_section
+  end
+
+  defp normalize_comment_body(body) when is_binary(body) do
+    body
+    |> String.replace("\r\n", "\n")
+    |> String.replace("\r", "\n")
+    |> String.trim()
+  end
+
+  defp normalize_comment_body(_body), do: ""
+
+  defp normalize_comment_timestamp(value) when is_binary(value) do
+    value
+    |> String.trim()
+    |> case do
+      "" -> nil
+      timestamp -> timestamp
+    end
+  end
+
+  defp normalize_comment_timestamp(_value), do: nil
+
+  defp workpad_comment?(body) when is_binary(body) do
+    Enum.any?(@workpad_headers, &String.contains?(body, &1))
+  end
 
   defp assignee_field(%{} = assignee, field) when is_binary(field), do: assignee[field]
   defp assignee_field(_assignee, _field), do: nil
