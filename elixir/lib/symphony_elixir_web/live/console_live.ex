@@ -490,65 +490,53 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 </article>
               </section>
 
-              <div class="section-stack section-stack-compact">
-                <section class="runtime-table-card">
-                  <h3 class="section-subtitle"><%= tr(@lang, "Running sessions", "运行会话") %></h3>
+              <section class="sidebar-runtime-lanes">
+                <article class="runtime-lane">
+                  <div class="runtime-lane-head">
+                    <div>
+                      <h3 class="section-subtitle"><%= tr(@lang, "Running sessions", "运行会话") %></h3>
+                      <p class="section-copy"><%= tr(@lang, "What is executing right now.", "当前正在执行的议题。") %></p>
+                    </div>
+                    <span class="state-badge"><%= length(normalized_runtime_entries(field(@runtime_payload, "running"))) %></span>
+                  </div>
                   <%= if normalized_runtime_entries(field(@runtime_payload, "running")) == [] do %>
                     <p class="empty-state"><%= tr(@lang, "No active sessions.", "当前没有活跃会话。") %></p>
                   <% else %>
-                    <div class="table-wrap">
-                      <table class="data-table data-table-compact">
-                        <thead>
-                          <tr>
-                            <th><%= tr(@lang, "Issue", "议题") %></th>
-                            <th><%= tr(@lang, "State", "状态") %></th>
-                            <th><%= tr(@lang, "Update", "更新") %></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr :for={entry <- normalized_runtime_entries(field(@runtime_payload, "running"))}>
-                            <td>
-                              <button type="button" class="issue-link issue-button" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
-                                <%= field(entry, "issue_identifier") %>
-                              </button>
-                            </td>
-                            <td><span class={state_badge_class(field(entry, "state"))}><%= field(entry, "state") || tr(@lang, "n/a", "未提供") %></span></td>
-                            <td><%= field(entry, "last_event") || tr(@lang, "n/a", "未提供") %></td>
-                          </tr>
-                        </tbody>
-                      </table>
+                    <div class="runtime-lane-list">
+                      <article :for={entry <- normalized_runtime_entries(field(@runtime_payload, "running"))} class="runtime-lane-item">
+                        <button type="button" class="issue-link issue-button run-ledger-issue" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
+                          <%= field(entry, "issue_identifier") %>
+                        </button>
+                        <span class={state_badge_class(field(entry, "state"))}><%= field(entry, "state") || tr(@lang, "n/a", "未提供") %></span>
+                        <p class="runtime-lane-meta"><%= field(entry, "last_event") || tr(@lang, "n/a", "未提供") %></p>
+                      </article>
                     </div>
                   <% end %>
-                </section>
+                </article>
 
-                <section class="runtime-table-card">
-                  <h3 class="section-subtitle"><%= tr(@lang, "Retry queue", "重试队列") %></h3>
+                <article class="runtime-lane">
+                  <div class="runtime-lane-head">
+                    <div>
+                      <h3 class="section-subtitle"><%= tr(@lang, "Retry queue", "重试队列") %></h3>
+                      <p class="section-copy"><%= tr(@lang, "What will be retried next.", "接下来会重试的议题。") %></p>
+                    </div>
+                    <span class="state-badge"><%= length(normalized_runtime_entries(field(@runtime_payload, "retrying"))) %></span>
+                  </div>
                   <%= if normalized_runtime_entries(field(@runtime_payload, "retrying")) == [] do %>
                     <p class="empty-state"><%= tr(@lang, "No issues are currently backing off.", "当前没有议题在退避重试。") %></p>
                   <% else %>
-                    <div class="table-wrap">
-                      <table class="data-table data-table-compact">
-                        <thead>
-                          <tr>
-                            <th><%= tr(@lang, "Issue", "议题") %></th>
-                            <th><%= tr(@lang, "Due", "重试时间") %></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          <tr :for={entry <- normalized_runtime_entries(field(@runtime_payload, "retrying"))}>
-                            <td>
-                              <button type="button" class="issue-link issue-button" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
-                                <%= field(entry, "issue_identifier") %>
-                              </button>
-                            </td>
-                            <td class="mono"><%= field(entry, "due_at") || tr(@lang, "n/a", "未提供") %></td>
-                          </tr>
-                        </tbody>
-                      </table>
+                    <div class="runtime-lane-list">
+                      <article :for={entry <- normalized_runtime_entries(field(@runtime_payload, "retrying"))} class="runtime-lane-item">
+                        <button type="button" class="issue-link issue-button run-ledger-issue" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
+                          <%= field(entry, "issue_identifier") %>
+                        </button>
+                        <span class="state-badge state-badge-warning"><%= tr(@lang, "Retry", "重试") %></span>
+                        <p class="runtime-lane-meta mono"><%= field(entry, "due_at") || tr(@lang, "n/a", "未提供") %></p>
+                      </article>
                     </div>
                   <% end %>
-                </section>
-              </div>
+                </article>
+              </section>
             <% end %>
           </section>
         </aside>
@@ -724,59 +712,6 @@ defmodule SymphonyElixirWeb.ConsoleLive do
             <div class="execution-stage-grid">
               <section class="section-card">
                 <div class="section-stack">
-                  <section>
-                    <h3 class="section-subtitle"><%= tr(@lang, "Telemetry", "执行遥测") %></h3>
-                    <div class="detail-grid">
-                      <article class="metric-card">
-                        <p class="metric-label"><%= tr(@lang, "Issue", "议题") %></p>
-                        <p class="metric-value"><%= field(@status, "issue") %></p>
-                        <p class="metric-detail"><%= field(@status, "summary") || tr(@lang, "n/a", "未提供") %></p>
-                      </article>
-
-                      <article class="metric-card">
-                        <p class="metric-label"><%= tr(@lang, "Phase", "阶段") %></p>
-                        <p class="metric-value"><%= field(@status, "phase") || tr(@lang, "n/a", "未提供") %></p>
-                        <p class="metric-detail"><%= tr(@lang, "Route hint", "路由提示") %>：<%= field(@status, "route_hint") || tr(@lang, "n/a", "未提供") %></p>
-                      </article>
-
-                      <article class="metric-card">
-                        <p class="metric-label"><%= tr(@lang, "Branch / commit", "分支 / 提交") %></p>
-                        <p class="metric-value mono"><%= field(@status, "branch") || tr(@lang, "n/a", "未提供") %></p>
-                        <p class="metric-detail mono"><%= field(@status, "commit") || tr(@lang, "n/a", "未提供") %></p>
-                      </article>
-
-                      <article class="metric-card">
-                        <p class="metric-label"><%= tr(@lang, "Next", "下一步") %></p>
-                        <p class="metric-value"><%= field(@status, "next") || tr(@lang, "n/a", "未提供") %></p>
-                        <p class="metric-detail"><%= tr(@lang, "Updated", "更新时间") %>：<span class="mono"><%= field(@status, "updated_at") || tr(@lang, "n/a", "未提供") %></span></p>
-                      </article>
-
-                      <article class="metric-card">
-                        <p class="metric-label"><%= tr(@lang, "Runtime", "运行时") %></p>
-                        <p class="metric-value"><%= runtime_label(field(@status, "runtime_control"), @lang) %></p>
-                        <p class="metric-detail"><%= runtime_reason(field(@status, "runtime_control"), @lang) %></p>
-                      </article>
-
-                      <article class="metric-card">
-                        <p class="metric-label"><%= tr(@lang, "Issue control", "议题控制") %></p>
-                        <p class="metric-value"><%= issue_control_label(field(@status, "issue_control"), @lang) %></p>
-                        <p class="metric-detail"><%= issue_control_reason(field(@status, "issue_control"), @lang) %></p>
-                      </article>
-
-                      <article class="metric-card">
-                        <p class="metric-label"><%= tr(@lang, "Live session", "实时会话") %></p>
-                        <p class="metric-value mono"><%= runtime_issue_label(field(@status, "runtime_issue"), @lang) %></p>
-                        <p class="metric-detail"><%= runtime_issue_detail(field(@status, "runtime_issue"), @lang) %></p>
-                      </article>
-
-                      <article class="metric-card">
-                        <p class="metric-label"><%= tr(@lang, "Operator instruction", "操作指令") %></p>
-                        <p class="metric-value"><%= operator_instruction_label(@status, @lang) %></p>
-                        <p class="metric-detail"><%= operator_instruction_detail(@status, @lang) %></p>
-                      </article>
-                    </div>
-                  </section>
-
                   <section>
                     <h3 class="section-subtitle"><%= tr(@lang, "Checks", "检查项") %></h3>
                     <div class="table-wrap">

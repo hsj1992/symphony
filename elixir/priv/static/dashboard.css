@@ -156,9 +156,7 @@ pre,
   gap: 1rem;
   position: sticky;
   top: 1rem;
-  max-height: calc(100vh - 2rem);
-  overflow-y: auto;
-  padding-right: 0.2rem;
+  align-self: start;
 }
 
 .operator-main {
@@ -1268,6 +1266,54 @@ pre,
   border-radius: var(--radius-md);
   background: #fff;
   padding: 0.9rem;
+}
+
+.sidebar-runtime-lanes {
+  display: grid;
+  gap: 0.85rem;
+  margin-top: 0.95rem;
+}
+
+.runtime-lane {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.96) 100%);
+  padding: 0.9rem;
+}
+
+.runtime-lane-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  gap: 0.75rem;
+}
+
+.runtime-lane-list {
+  display: grid;
+  gap: 0.6rem;
+  margin-top: 0.85rem;
+}
+
+.runtime-lane-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.35rem 0.65rem;
+  padding: 0.7rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: #fff;
+}
+
+.runtime-lane-item .run-ledger-issue {
+  align-self: center;
+}
+
+.runtime-lane-meta {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .data-table-compact th,
