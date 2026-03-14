@@ -165,6 +165,11 @@ pre,
   min-width: 0;
 }
 
+.runtime-dock {
+  display: grid;
+  gap: 0.95rem;
+}
+
 .hero-card,
 .section-card,
 .metric-card,
@@ -616,10 +621,6 @@ pre,
   gap: 0.9rem;
 }
 
-.ribbon-card-sidebar {
-  margin-top: 0.95rem;
-}
-
 .run-ledger {
   display: grid;
   margin-top: 0.15rem;
@@ -697,6 +698,21 @@ pre,
   font-size: 0.8rem;
   color: var(--muted);
   white-space: nowrap;
+}
+
+.runtime-dock-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.72fr) minmax(0, 1.28fr);
+  gap: 0.9rem;
+  align-items: stretch;
+}
+
+.runtime-dock-pulse {
+  margin-top: 0;
+}
+
+.runtime-dock-metrics {
+  align-content: stretch;
 }
 
 .toolbar-form,
@@ -1268,10 +1284,10 @@ pre,
   padding: 0.9rem;
 }
 
-.sidebar-runtime-lanes {
+.runtime-lane-grid {
   display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.85rem;
-  margin-top: 0.95rem;
 }
 
 .runtime-lane {
@@ -1348,6 +1364,8 @@ pre,
 
   .cockpit-layout,
   .focus-ribbon,
+  .runtime-dock-grid,
+  .runtime-lane-grid,
   .toolbar-form,
   .instruction-form,
   .detail-grid,

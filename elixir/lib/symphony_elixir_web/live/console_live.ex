@@ -444,53 +444,72 @@ defmodule SymphonyElixirWeb.ConsoleLive do
             <% end %>
           </section>
 
-          <section class="section-card">
+        </aside>
+
+        <main class="operator-main">
+          <section class="focus-ribbon">
+            <article class="ribbon-card">
+              <p class="metric-label"><%= tr(@lang, "Issue spotlight", "当前任务焦点") %></p>
+              <h3 class="ribbon-title mono"><%= spotlight_title(@status, @lang) %></h3>
+              <p class="ribbon-copy"><%= spotlight_summary(@status, @lang) %></p>
+            </article>
+
+            <article class="ribbon-card">
+              <p class="metric-label"><%= tr(@lang, "Operator feedback", "操作反馈") %></p>
+              <h3 class="ribbon-title"><%= operator_feedback_title(@action_feedback, @lang) %></h3>
+              <p class="ribbon-copy"><%= operator_feedback_copy(@action_feedback, @status, @lang) %></p>
+            </article>
+          </section>
+
+          <section class="section-card runtime-dock">
             <div class="section-header section-header-tight">
               <div>
                 <h2 class="section-title"><%= tr(@lang, "Runtime Overview", "运行态总览") %></h2>
-                <p class="section-copy"><%= tr(@lang, "Observe runtime pulse, active sessions, and retry pressure without leaving the sidebar.", "在侧栏中直接观察 runtime 脉搏、活跃会话与重试压力。") %></p>
+                <p class="section-copy"><%= tr(@lang, "Keep pulse, active sessions, and retry pressure on the main stage so the operator never has to leave the execution surface.", "把 runtime 脉搏、活跃会话和重试压力固定在主舞台上，避免在导航栏里来回切换。") %></p>
               </div>
             </div>
-
-            <article class="ribbon-card ribbon-card-runtime ribbon-card-sidebar">
-              <p class="metric-label"><%= tr(@lang, "Runtime pulse", "运行脉搏") %></p>
-              <h3 class="ribbon-title"><%= heartbeat_label(@now, @lang) %></h3>
-              <p class="ribbon-copy"><%= heartbeat_copy(@runtime_payload, @lang) %></p>
-              <div class="activity-meter">
-                <span style={meter_width_style(runtime_activity_percent(@runtime_payload))}></span>
-              </div>
-            </article>
 
             <%= if runtime_error = field(@runtime_payload, "error") do %>
               <p class="empty-state"><%= runtime_error_message(runtime_error, @lang) %></p>
             <% else %>
-              <section class="metric-grid runtime-sidebar-grid">
-                <article class="metric-card">
-                  <p class="metric-label"><%= tr(@lang, "Running", "运行中") %></p>
-                  <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "running") || 0 %></p>
-                  <p class="metric-detail"><%= tr(@lang, "Active sessions", "活跃会话") %></p>
+              <div class="runtime-dock-grid">
+                <article class="ribbon-card ribbon-card-runtime runtime-dock-pulse">
+                  <p class="metric-label"><%= tr(@lang, "Runtime pulse", "运行脉搏") %></p>
+                  <h3 class="ribbon-title"><%= heartbeat_label(@now, @lang) %></h3>
+                  <p class="ribbon-copy"><%= heartbeat_copy(@runtime_payload, @lang) %></p>
+                  <div class="activity-meter">
+                    <span style={meter_width_style(runtime_activity_percent(@runtime_payload))}></span>
+                  </div>
                 </article>
 
-                <article class="metric-card">
-                  <p class="metric-label"><%= tr(@lang, "Retrying", "重试中") %></p>
-                  <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "retrying") || 0 %></p>
-                  <p class="metric-detail"><%= tr(@lang, "Backoff queue", "退避队列") %></p>
-                </article>
+                <section class="metric-grid runtime-dock-metrics">
+                  <article class="metric-card">
+                    <p class="metric-label"><%= tr(@lang, "Running", "运行中") %></p>
+                    <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "running") || 0 %></p>
+                    <p class="metric-detail"><%= tr(@lang, "Active sessions", "活跃会话") %></p>
+                  </article>
 
-                <article class="metric-card">
-                  <p class="metric-label"><%= tr(@lang, "Total tokens", "总 token") %></p>
-                  <p class="metric-value numeric"><%= format_int(field(field(@runtime_payload, "codex_totals"), "total_tokens")) %></p>
-                  <p class="metric-detail"><%= tr(@lang, "All active + completed runs", "活跃与已完成运行总计") %></p>
-                </article>
+                  <article class="metric-card">
+                    <p class="metric-label"><%= tr(@lang, "Retrying", "重试中") %></p>
+                    <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "retrying") || 0 %></p>
+                    <p class="metric-detail"><%= tr(@lang, "Backoff queue", "退避队列") %></p>
+                  </article>
 
-                <article class="metric-card">
-                  <p class="metric-label"><%= tr(@lang, "Runtime", "运行时长") %></p>
-                  <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@runtime_payload, @now)) %></p>
-                  <p class="metric-detail"><%= tr(@lang, "Accumulated runtime", "累计运行时长") %></p>
-                </article>
-              </section>
+                  <article class="metric-card">
+                    <p class="metric-label"><%= tr(@lang, "Total tokens", "总 token") %></p>
+                    <p class="metric-value numeric"><%= format_int(field(field(@runtime_payload, "codex_totals"), "total_tokens")) %></p>
+                    <p class="metric-detail"><%= tr(@lang, "All active + completed runs", "活跃与已完成运行总计") %></p>
+                  </article>
 
-              <section class="sidebar-runtime-lanes">
+                  <article class="metric-card">
+                    <p class="metric-label"><%= tr(@lang, "Runtime", "运行时长") %></p>
+                    <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@runtime_payload, @now)) %></p>
+                    <p class="metric-detail"><%= tr(@lang, "Accumulated runtime", "累计运行时长") %></p>
+                  </article>
+                </section>
+              </div>
+
+              <section class="runtime-lane-grid">
                 <article class="runtime-lane">
                   <div class="runtime-lane-head">
                     <div>
@@ -538,22 +557,6 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 </article>
               </section>
             <% end %>
-          </section>
-        </aside>
-
-        <main class="operator-main">
-          <section class="focus-ribbon">
-            <article class="ribbon-card">
-              <p class="metric-label"><%= tr(@lang, "Issue spotlight", "当前任务焦点") %></p>
-              <h3 class="ribbon-title mono"><%= spotlight_title(@status, @lang) %></h3>
-              <p class="ribbon-copy"><%= spotlight_summary(@status, @lang) %></p>
-            </article>
-
-            <article class="ribbon-card">
-              <p class="metric-label"><%= tr(@lang, "Operator feedback", "操作反馈") %></p>
-              <h3 class="ribbon-title"><%= operator_feedback_title(@action_feedback, @lang) %></h3>
-              <p class="ribbon-copy"><%= operator_feedback_copy(@action_feedback, @status, @lang) %></p>
-            </article>
           </section>
 
           <section class="section-card">
