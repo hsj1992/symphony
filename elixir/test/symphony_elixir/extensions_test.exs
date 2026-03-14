@@ -185,6 +185,7 @@ defmodule SymphonyElixir.ExtensionsTest do
              "summary" => "Dry-run validation passed"
            }
          },
+         "delivery" => delivery_state(),
          "latest_events" => [
            %{
              "ts" => "2026-03-12T15:08:00+08:00",
@@ -261,9 +262,43 @@ defmodule SymphonyElixir.ExtensionsTest do
            "latest_operator_instruction" => latest_instruction_state(),
            "operator_instruction_history" => instruction_history_state(),
            "checks" => %{},
+           "delivery" => delivery_state(),
            "latest_events" => []
          }
        }}
+    end
+
+    defp delivery_state do
+      %{
+        "route" => %{
+          "status" => "ready_for_merging",
+          "linear_state" => "Human Review",
+          "route_hint" => "Merging",
+          "summary" => "Validation is green and the issue appears ready for Merging."
+        },
+        "pull_request" => %{
+          "status" => "open",
+          "number" => 17,
+          "title" => "Example bridge delivery",
+          "url" => "https://example.invalid/pr/17",
+          "head_branch" => "feat/example-bridge-console",
+          "base_branch" => "main",
+          "merge_commit_sha" => nil
+        },
+        "ci" => %{
+          "status" => "success",
+          "pipeline" => "207",
+          "url" => "https://example.invalid/pipeline/207",
+          "summary" => "Woodpecker pipeline 207 passed"
+        },
+        "automation" => %{
+          "status" => "healthy",
+          "poll_healthy" => true,
+          "last_success_at" => "2026-03-12T15:09:00+08:00",
+          "last_error" => nil,
+          "summary" => "Merge sync is healthy."
+        }
+      }
     end
 
     defp pending_instruction_state do
@@ -1368,6 +1403,10 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "追加指令"
     assert html =~ "当前状态"
     assert html =~ "当前没有跟踪中的指令"
+    assert html =~ "交付状态"
+    assert html =~ "已打开 PR #17"
+    assert html =~ "CI 已通过 #207"
+    assert html =~ "Merge sync is healthy."
 
     pause_html =
       view

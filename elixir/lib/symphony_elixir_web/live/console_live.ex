@@ -483,6 +483,45 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
             <div class="section-stack">
               <section>
+                <h3 class="section-subtitle"><%= tr(@lang, "Delivery", "交付状态") %></h3>
+                <div class="detail-grid">
+                  <article class="metric-card">
+                    <p class="metric-label"><%= tr(@lang, "Route", "交付路线") %></p>
+                    <p class="metric-value"><%= delivery_route_label(field(@status, "delivery"), @lang) %></p>
+                    <p class="metric-detail"><%= delivery_route_detail(field(@status, "delivery"), @lang) %></p>
+                  </article>
+
+                  <article class="metric-card">
+                    <p class="metric-label"><%= tr(@lang, "Pull request", "拉取请求") %></p>
+                    <p class="metric-value"><%= delivery_pr_label(field(@status, "delivery"), @lang) %></p>
+                    <p class="metric-detail"><%= delivery_pr_detail(field(@status, "delivery"), @lang) %></p>
+                    <p :if={delivery_pr_url(field(@status, "delivery"))} class="metric-detail">
+                      <a class="issue-link" href={delivery_pr_url(field(@status, "delivery"))} target="_blank" rel="noreferrer">
+                        <%= tr(@lang, "Open pull request", "打开 PR") %>
+                      </a>
+                    </p>
+                  </article>
+
+                  <article class="metric-card">
+                    <p class="metric-label"><%= tr(@lang, "Remote CI", "远端 CI") %></p>
+                    <p class="metric-value"><%= delivery_ci_label(field(@status, "delivery"), @lang) %></p>
+                    <p class="metric-detail"><%= delivery_ci_detail(field(@status, "delivery"), @lang) %></p>
+                    <p :if={delivery_ci_url(field(@status, "delivery"))} class="metric-detail">
+                      <a class="issue-link" href={delivery_ci_url(field(@status, "delivery"))} target="_blank" rel="noreferrer">
+                        <%= tr(@lang, "Open pipeline", "打开流水线") %>
+                      </a>
+                    </p>
+                  </article>
+
+                  <article class="metric-card">
+                    <p class="metric-label"><%= tr(@lang, "Merge automation", "合并自动化") %></p>
+                    <p class="metric-value"><%= delivery_automation_label(field(@status, "delivery"), @lang) %></p>
+                    <p class="metric-detail"><%= delivery_automation_detail(field(@status, "delivery"), @lang) %></p>
+                  </article>
+                </div>
+              </section>
+
+              <section>
                 <h3 class="section-subtitle"><%= tr(@lang, "Checks", "检查项") %></h3>
                 <div class="table-wrap">
                   <table class="data-table">
@@ -1226,6 +1265,160 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp runtime_issue_detail(_runtime_issue, lang),
     do: tr(lang, "Load a running issue to inspect live session metadata.", "加载一个运行中的议题后，可在这里看到实时会话元数据。")
+
+  defp delivery_route(nil), do: %{}
+  defp delivery_route(delivery) when is_map(delivery), do: field(delivery, "route") || %{}
+  defp delivery_route(_delivery), do: %{}
+
+  defp delivery_pull_request(nil), do: %{}
+  defp delivery_pull_request(delivery) when is_map(delivery), do: field(delivery, "pull_request") || %{}
+  defp delivery_pull_request(_delivery), do: %{}
+
+  defp delivery_ci(nil), do: %{}
+  defp delivery_ci(delivery) when is_map(delivery), do: field(delivery, "ci") || %{}
+  defp delivery_ci(_delivery), do: %{}
+
+  defp delivery_automation(nil), do: %{}
+  defp delivery_automation(delivery) when is_map(delivery), do: field(delivery, "automation") || %{}
+  defp delivery_automation(_delivery), do: %{}
+
+  defp delivery_route_label(delivery, lang) do
+    case field(delivery_route(delivery), "status") do
+      "merged" -> tr(lang, "Merged", "已合并")
+      "done" -> tr(lang, "Done", "已完成")
+      "merging" -> tr(lang, "Merging", "合并中")
+      "awaiting_pr" -> tr(lang, "Awaiting PR", "等待创建 PR")
+      "human_review" -> tr(lang, "Human Review", "人工评审")
+      "ready_for_merging" -> tr(lang, "Ready for Merging", "可进入 Merging")
+      "ready_for_human_review" -> tr(lang, "Ready for Human Review", "可进入人工评审")
+      "in_progress" -> tr(lang, "In progress", "处理中")
+      _ -> tr(lang, "Unknown", "未知")
+    end
+  end
+
+  defp delivery_route_detail(delivery, lang) do
+    route = delivery_route(delivery)
+    summary = blank_to_nil(field(route, "summary"))
+    linear_state = blank_to_nil(field(route, "linear_state"))
+    route_hint = blank_to_nil(field(route, "route_hint"))
+
+    cond do
+      summary && linear_state && route_hint ->
+        tr(lang, "Linear: #{linear_state} | Route hint: #{route_hint} | #{summary}", "Linear：#{linear_state}｜路由提示：#{route_hint}｜#{summary}")
+
+      summary && linear_state ->
+        tr(lang, "Linear: #{linear_state} | #{summary}", "Linear：#{linear_state}｜#{summary}")
+
+      summary ->
+        summary
+
+      true ->
+        tr(lang, "No delivery route summary returned.", "当前没有返回交付路线摘要。")
+    end
+  end
+
+  defp delivery_pr_label(delivery, lang) do
+    pr = delivery_pull_request(delivery)
+    number = field(pr, "number")
+
+    case field(pr, "status") do
+      "merged" -> pr_number_text(number, lang, tr(lang, "Merged PR", "已合并 PR"))
+      "open" -> pr_number_text(number, lang, tr(lang, "Open PR", "已打开 PR"))
+      "closed" -> pr_number_text(number, lang, tr(lang, "Closed PR", "已关闭 PR"))
+      "unknown" -> tr(lang, "No PR linked", "当前没有关联 PR")
+      _ -> tr(lang, "No PR linked", "当前没有关联 PR")
+    end
+  end
+
+  defp delivery_pr_detail(delivery, lang) do
+    pr = delivery_pull_request(delivery)
+    title = blank_to_nil(field(pr, "title"))
+    head_branch = blank_to_nil(field(pr, "head_branch"))
+    base_branch = blank_to_nil(field(pr, "base_branch"))
+    merge_sha = blank_to_nil(field(pr, "merge_commit_sha"))
+
+    cond do
+      title && head_branch && base_branch ->
+        detail = tr(lang, "#{head_branch} -> #{base_branch} | #{title}", "#{head_branch} -> #{base_branch}｜#{title}")
+        if merge_sha, do: detail <> tr(lang, " | Merge SHA: #{merge_sha}", "｜合并 SHA：#{merge_sha}"), else: detail
+
+      head_branch && base_branch ->
+        tr(lang, "#{head_branch} -> #{base_branch}", "#{head_branch} -> #{base_branch}")
+
+      true ->
+        tr(lang, "No pull request metadata returned yet.", "当前还没有返回 PR 元数据。")
+    end
+  end
+
+  defp delivery_pr_url(delivery), do: blank_to_nil(field(delivery_pull_request(delivery), "url"))
+
+  defp delivery_ci_label(delivery, lang) do
+    ci = delivery_ci(delivery)
+
+    case field(ci, "status") do
+      "success" -> pipeline_text(ci, lang, tr(lang, "CI passed", "CI 已通过"))
+      "passed" -> pipeline_text(ci, lang, tr(lang, "CI passed", "CI 已通过"))
+      "running" -> pipeline_text(ci, lang, tr(lang, "CI running", "CI 运行中"))
+      "pending" -> pipeline_text(ci, lang, tr(lang, "CI pending", "CI 待执行"))
+      "failed" -> pipeline_text(ci, lang, tr(lang, "CI failed", "CI 失败"))
+      "error" -> pipeline_text(ci, lang, tr(lang, "CI failed", "CI 失败"))
+      "unknown" -> tr(lang, "CI unknown", "CI 未知")
+      nil -> tr(lang, "CI unknown", "CI 未知")
+      other -> tr(lang, "CI #{other}", "CI #{other}")
+    end
+  end
+
+  defp delivery_ci_detail(delivery, lang) do
+    ci = delivery_ci(delivery)
+    summary = blank_to_nil(field(ci, "summary"))
+
+    summary || tr(lang, "No Woodpecker summary returned yet.", "当前还没有返回 Woodpecker 摘要。")
+  end
+
+  defp delivery_ci_url(delivery), do: blank_to_nil(field(delivery_ci(delivery), "url"))
+
+  defp delivery_automation_label(delivery, lang) do
+    case field(delivery_automation(delivery), "status") do
+      "healthy" -> tr(lang, "Healthy", "健康")
+      "degraded" -> tr(lang, "Degraded", "异常")
+      _ -> tr(lang, "Unknown", "未知")
+    end
+  end
+
+  defp delivery_automation_detail(delivery, lang) do
+    automation = delivery_automation(delivery)
+    summary = blank_to_nil(field(automation, "summary"))
+    last_success_at = blank_to_nil(field(automation, "last_success_at"))
+    last_error = blank_to_nil(field(automation, "last_error"))
+
+    cond do
+      summary && last_success_at && last_error ->
+        tr(lang, "#{summary} Last success: #{last_success_at} | Last error: #{last_error}", "#{summary} 最近成功：#{last_success_at}｜最近错误：#{last_error}")
+
+      summary && last_success_at ->
+        tr(lang, "#{summary} Last success: #{last_success_at}", "#{summary} 最近成功：#{last_success_at}")
+
+      summary && last_error ->
+        tr(lang, "#{summary} Last error: #{last_error}", "#{summary} 最近错误：#{last_error}")
+
+      summary ->
+        summary
+
+      true ->
+        tr(lang, "No merge automation summary returned.", "当前没有返回合并自动化摘要。")
+    end
+  end
+
+  defp pr_number_text(number, _lang, prefix) when is_integer(number), do: "#{prefix} ##{number}"
+  defp pr_number_text(number, _lang, prefix) when is_binary(number) and number != "", do: "#{prefix} ##{number}"
+  defp pr_number_text(_number, _lang, prefix), do: prefix
+
+  defp pipeline_text(ci, _lang, prefix) do
+    case field(ci, "pipeline") do
+      nil -> prefix
+      pipeline -> "#{prefix} ##{pipeline}"
+    end
+  end
 
   defp operator_instruction(status) when is_map(status) do
     field(status, "latest_operator_instruction") || field(status, "pending_operator_instruction")
