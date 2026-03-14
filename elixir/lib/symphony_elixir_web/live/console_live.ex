@@ -432,6 +432,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                       <%= field(run, "issue") %>
                     </button>
                     <span class="run-ledger-route"><%= route_hint_text(run, @lang) %></span>
+                    <div class="run-ledger-sparkline">
+                      <span :for={segment <- run_ledger_segments(run)} class={run_ledger_segment_class(segment)}></span>
+                    </div>
                   </div>
                   <div class="run-ledger-meta mono">
                     <%= run_ledger_time(field(run, "updated_at")) %>
@@ -563,12 +566,6 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               <h3 class="ribbon-title"><%= operator_feedback_title(@action_feedback, @lang) %></h3>
               <p class="ribbon-copy"><%= operator_feedback_copy(@action_feedback, @status, @lang) %></p>
             </article>
-
-            <article class="ribbon-card">
-              <p class="metric-label"><%= tr(@lang, "Delivery pulse", "交付脉搏") %></p>
-              <h3 class="ribbon-title"><%= delivery_route_label(field(@status, "delivery"), @lang) %></h3>
-              <p class="ribbon-copy"><%= delivery_ci_detail(field(@status, "delivery"), @lang) %></p>
-            </article>
           </section>
 
           <section class="section-card">
@@ -602,9 +599,15 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               <div class="progress-track">
                 <article :for={step <- phase_progress_steps(@status, @lang)} class={phase_step_class(step.state)}>
                   <div class="progress-dot"></div>
-                  <div>
+                  <div class="progress-content">
                     <p class="progress-title"><%= step.title %></p>
                     <p class="progress-copy"><%= step.copy %></p>
+                    <div :if={step.badge} class="progress-badge-row">
+                      <a :if={step.url} class="status-badge status-badge-link" href={step.url} target="_blank" rel="noreferrer">
+                        <%= step.badge %>
+                      </a>
+                      <span :if={!step.url} class="status-badge status-badge-embedded"><%= step.badge %></span>
+                    </div>
                   </div>
                 </article>
               </div>
@@ -771,45 +774,6 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                         <p class="metric-value"><%= operator_instruction_label(@status, @lang) %></p>
                         <p class="metric-detail"><%= operator_instruction_detail(@status, @lang) %></p>
                       </article>
-                    </div>
-                  </section>
-
-                  <section>
-                    <h3 class="section-subtitle"><%= tr(@lang, "Delivery", "交付状态") %></h3>
-                    <div class="detail-grid">
-                  <article class="metric-card">
-                    <p class="metric-label"><%= tr(@lang, "Route", "交付路线") %></p>
-                    <p class="metric-value"><%= delivery_route_label(field(@status, "delivery"), @lang) %></p>
-                    <p class="metric-detail"><%= delivery_route_detail(field(@status, "delivery"), @lang) %></p>
-                  </article>
-
-                  <article class="metric-card">
-                    <p class="metric-label"><%= tr(@lang, "Pull request", "拉取请求") %></p>
-                    <p class="metric-value"><%= delivery_pr_label(field(@status, "delivery"), @lang) %></p>
-                    <p class="metric-detail"><%= delivery_pr_detail(field(@status, "delivery"), @lang) %></p>
-                    <p :if={delivery_pr_url(field(@status, "delivery"))} class="metric-detail">
-                      <a class="issue-link" href={delivery_pr_url(field(@status, "delivery"))} target="_blank" rel="noreferrer">
-                        <%= tr(@lang, "Open pull request", "打开 PR") %>
-                      </a>
-                    </p>
-                  </article>
-
-                  <article class="metric-card">
-                    <p class="metric-label"><%= tr(@lang, "Remote CI", "远端 CI") %></p>
-                    <p class="metric-value"><%= delivery_ci_label(field(@status, "delivery"), @lang) %></p>
-                    <p class="metric-detail"><%= delivery_ci_detail(field(@status, "delivery"), @lang) %></p>
-                    <p :if={delivery_ci_url(field(@status, "delivery"))} class="metric-detail">
-                      <a class="issue-link" href={delivery_ci_url(field(@status, "delivery"))} target="_blank" rel="noreferrer">
-                        <%= tr(@lang, "Open pipeline", "打开流水线") %>
-                      </a>
-                    </p>
-                  </article>
-
-                  <article class="metric-card">
-                    <p class="metric-label"><%= tr(@lang, "Merge automation", "合并自动化") %></p>
-                    <p class="metric-value"><%= delivery_automation_label(field(@status, "delivery"), @lang) %></p>
-                    <p class="metric-detail"><%= delivery_automation_detail(field(@status, "delivery"), @lang) %></p>
-                  </article>
                     </div>
                   </section>
 
@@ -1377,23 +1341,54 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp phase_progress_steps(status, lang) do
     current_index = phase_progress_index(status)
+    delivery = field(status, "delivery")
 
     [
-      {1, tr(lang, "Queue", "排队"), tr(lang, "Issue is discovered and waiting to be worked.", "议题已被发现，等待进入执行。")},
-      {2, tr(lang, "Build", "实现"), tr(lang, "Worker is changing code or preparing the workspace.", "执行器正在改代码或准备工作区。")},
-      {3, tr(lang, "Validate", "验证"), tr(lang, "Checks, CI, and runtime verification are in progress.", "本地检查、CI 和运行验证进行中。")},
-      {4, tr(lang, "Review", "评审"), tr(lang, "Human review and operator feedback decide the next route.", "人工评审和操作员反馈决定下一步路由。")},
-      {5, tr(lang, "Ship", "交付"), tr(lang, "PR, merge automation, and completion state are converging.", "PR、合并自动化和完成状态正在收口。")}
+      %{
+        index: 1,
+        title: tr(lang, "Queue", "排队"),
+        copy: tr(lang, "Issue is discovered and waiting to be worked.", "议题已被发现，等待进入执行。"),
+        badge: nil,
+        url: nil
+      },
+      %{
+        index: 2,
+        title: tr(lang, "Build", "实现"),
+        copy: tr(lang, "Worker is changing code or preparing the workspace.", "执行器正在改代码或准备工作区。"),
+        badge: nil,
+        url: nil
+      },
+      %{
+        index: 3,
+        title: tr(lang, "Validate", "验证"),
+        copy: tr(lang, "Checks, CI, and runtime verification are in progress.", "本地检查、CI 和运行验证进行中。"),
+        badge: delivery_ci_badge(delivery, lang),
+        url: delivery_ci_url(delivery)
+      },
+      %{
+        index: 4,
+        title: tr(lang, "Review", "评审"),
+        copy: tr(lang, "Human review and operator feedback decide the next route.", "人工评审和操作员反馈决定下一步路由。"),
+        badge: delivery_pr_badge(delivery, lang),
+        url: delivery_pr_url(delivery)
+      },
+      %{
+        index: 5,
+        title: tr(lang, "Ship", "交付"),
+        copy: tr(lang, "Merge automation and completion state are converging.", "合并自动化和完成状态正在收口。"),
+        badge: delivery_ship_badge(delivery, lang),
+        url: nil
+      }
     ]
-    |> Enum.map(fn {index, title, copy} ->
+    |> Enum.map(fn step ->
       state =
         cond do
-          index < current_index -> "complete"
-          index == current_index -> "current"
+          step.index < current_index -> "complete"
+          step.index == current_index -> "current"
           true -> "upcoming"
         end
 
-      %{index: index, title: title, copy: copy, state: state}
+      Map.put(step, :state, state)
     end)
   end
 
@@ -1418,6 +1413,22 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp phase_step_class("complete"), do: "progress-step progress-step-complete"
   defp phase_step_class("current"), do: "progress-step progress-step-current"
   defp phase_step_class(_state), do: "progress-step progress-step-upcoming"
+
+  defp run_ledger_segments(run) do
+    current_index = phase_progress_index(run)
+
+    Enum.map(1..5, fn index ->
+      cond do
+        index < current_index -> "done"
+        index == current_index -> "active"
+        true -> "upcoming"
+      end
+    end)
+  end
+
+  defp run_ledger_segment_class("done"), do: "sparkline-segment sparkline-segment-done"
+  defp run_ledger_segment_class("active"), do: "sparkline-segment sparkline-segment-active"
+  defp run_ledger_segment_class(_state), do: "sparkline-segment"
 
   defp guidance_callout_class(status) do
     runtime_paused = field(field(status, "runtime_control"), "paused") in [true, "true"]
@@ -1458,6 +1469,41 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp run_ledger_time(time) when is_binary(time) do
     String.slice(time, 11..15) || time
+  end
+
+  defp delivery_ci_badge(delivery, lang) do
+    label =
+      case field(delivery_ci(delivery), "status") do
+        "success" -> tr(lang, "CI passing", "CI 通过")
+        "running" -> tr(lang, "CI running", "CI 运行中")
+        "failed" -> tr(lang, "CI failed", "CI 失败")
+        "blocked" -> tr(lang, "CI blocked", "CI 阻塞")
+        _ -> nil
+      end
+
+    label
+  end
+
+  defp delivery_pr_badge(delivery, lang) do
+    label =
+      case field(delivery_pull_request(delivery), "status") do
+        "merged" -> tr(lang, "PR merged", "PR 已合并")
+        "open" -> tr(lang, "PR open", "PR 已打开")
+        "created" -> tr(lang, "PR created", "PR 已创建")
+        "missing" -> tr(lang, "PR pending", "PR 待创建")
+        _ -> nil
+      end
+
+    label
+  end
+
+  defp delivery_ship_badge(delivery, lang) do
+    case field(delivery_automation(delivery), "status") do
+      "healthy" -> tr(lang, "Merge ready", "可合并")
+      "waiting" -> tr(lang, "Merge waiting", "等待合并")
+      "blocked" -> tr(lang, "Merge blocked", "合并阻塞")
+      _ -> delivery_route_label(delivery, lang)
+    end
   end
 
   defp meter_width_style(percent) when is_integer(percent),
@@ -1746,129 +1792,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     end
   end
 
-  defp delivery_route_detail(delivery, lang) do
-    route = delivery_route(delivery)
-    summary = blank_to_nil(field(route, "summary"))
-    linear_state = blank_to_nil(field(route, "linear_state"))
-    route_hint = blank_to_nil(field(route, "route_hint"))
-
-    cond do
-      summary && linear_state && route_hint ->
-        tr(lang, "Linear: #{linear_state} | Route hint: #{route_hint} | #{summary}", "Linear：#{linear_state}｜路由提示：#{route_hint}｜#{summary}")
-
-      summary && linear_state ->
-        tr(lang, "Linear: #{linear_state} | #{summary}", "Linear：#{linear_state}｜#{summary}")
-
-      summary ->
-        summary
-
-      true ->
-        tr(lang, "No delivery route summary returned.", "当前没有返回交付路线摘要。")
-    end
-  end
-
-  defp delivery_pr_label(delivery, lang) do
-    pr = delivery_pull_request(delivery)
-    number = field(pr, "number")
-
-    case field(pr, "status") do
-      "merged" -> pr_number_text(number, lang, tr(lang, "Merged PR", "已合并 PR"))
-      "open" -> pr_number_text(number, lang, tr(lang, "Open PR", "已打开 PR"))
-      "closed" -> pr_number_text(number, lang, tr(lang, "Closed PR", "已关闭 PR"))
-      "unknown" -> tr(lang, "No PR linked", "当前没有关联 PR")
-      _ -> tr(lang, "No PR linked", "当前没有关联 PR")
-    end
-  end
-
-  defp delivery_pr_detail(delivery, lang) do
-    pr = delivery_pull_request(delivery)
-    title = blank_to_nil(field(pr, "title"))
-    head_branch = blank_to_nil(field(pr, "head_branch"))
-    base_branch = blank_to_nil(field(pr, "base_branch"))
-    merge_sha = blank_to_nil(field(pr, "merge_commit_sha"))
-
-    cond do
-      title && head_branch && base_branch ->
-        detail = tr(lang, "#{head_branch} -> #{base_branch} | #{title}", "#{head_branch} -> #{base_branch}｜#{title}")
-        if merge_sha, do: detail <> tr(lang, " | Merge SHA: #{merge_sha}", "｜合并 SHA：#{merge_sha}"), else: detail
-
-      head_branch && base_branch ->
-        tr(lang, "#{head_branch} -> #{base_branch}", "#{head_branch} -> #{base_branch}")
-
-      true ->
-        tr(lang, "No pull request metadata returned yet.", "当前还没有返回 PR 元数据。")
-    end
-  end
-
   defp delivery_pr_url(delivery), do: blank_to_nil(field(delivery_pull_request(delivery), "url"))
 
-  defp delivery_ci_label(delivery, lang) do
-    ci = delivery_ci(delivery)
-
-    case field(ci, "status") do
-      "success" -> pipeline_text(ci, lang, tr(lang, "CI passed", "CI 已通过"))
-      "passed" -> pipeline_text(ci, lang, tr(lang, "CI passed", "CI 已通过"))
-      "running" -> pipeline_text(ci, lang, tr(lang, "CI running", "CI 运行中"))
-      "pending" -> pipeline_text(ci, lang, tr(lang, "CI pending", "CI 待执行"))
-      "failed" -> pipeline_text(ci, lang, tr(lang, "CI failed", "CI 失败"))
-      "error" -> pipeline_text(ci, lang, tr(lang, "CI failed", "CI 失败"))
-      "unknown" -> tr(lang, "CI unknown", "CI 未知")
-      nil -> tr(lang, "CI unknown", "CI 未知")
-      other -> tr(lang, "CI #{other}", "CI #{other}")
-    end
-  end
-
-  defp delivery_ci_detail(delivery, lang) do
-    ci = delivery_ci(delivery)
-    summary = blank_to_nil(field(ci, "summary"))
-
-    summary || tr(lang, "No Woodpecker summary returned yet.", "当前还没有返回 Woodpecker 摘要。")
-  end
-
   defp delivery_ci_url(delivery), do: blank_to_nil(field(delivery_ci(delivery), "url"))
-
-  defp delivery_automation_label(delivery, lang) do
-    case field(delivery_automation(delivery), "status") do
-      "healthy" -> tr(lang, "Healthy", "健康")
-      "degraded" -> tr(lang, "Degraded", "异常")
-      _ -> tr(lang, "Unknown", "未知")
-    end
-  end
-
-  defp delivery_automation_detail(delivery, lang) do
-    automation = delivery_automation(delivery)
-    summary = blank_to_nil(field(automation, "summary"))
-    last_success_at = blank_to_nil(field(automation, "last_success_at"))
-    last_error = blank_to_nil(field(automation, "last_error"))
-
-    cond do
-      summary && last_success_at && last_error ->
-        tr(lang, "#{summary} Last success: #{last_success_at} | Last error: #{last_error}", "#{summary} 最近成功：#{last_success_at}｜最近错误：#{last_error}")
-
-      summary && last_success_at ->
-        tr(lang, "#{summary} Last success: #{last_success_at}", "#{summary} 最近成功：#{last_success_at}")
-
-      summary && last_error ->
-        tr(lang, "#{summary} Last error: #{last_error}", "#{summary} 最近错误：#{last_error}")
-
-      summary ->
-        summary
-
-      true ->
-        tr(lang, "No merge automation summary returned.", "当前没有返回合并自动化摘要。")
-    end
-  end
-
-  defp pr_number_text(number, _lang, prefix) when is_integer(number), do: "#{prefix} ##{number}"
-  defp pr_number_text(number, _lang, prefix) when is_binary(number) and number != "", do: "#{prefix} ##{number}"
-  defp pr_number_text(_number, _lang, prefix), do: prefix
-
-  defp pipeline_text(ci, _lang, prefix) do
-    case field(ci, "pipeline") do
-      nil -> prefix
-      pipeline -> "#{prefix} ##{pipeline}"
-    end
-  end
 
   defp operator_instruction(status) when is_map(status) do
     field(status, "latest_operator_instruction") || field(status, "pending_operator_instruction")

@@ -1404,10 +1404,12 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ "追加指令"
     assert html =~ "当前状态"
     assert html =~ "当前没有跟踪中的指令"
-    assert html =~ "交付状态"
-    assert html =~ "已打开 PR #17"
-    assert html =~ "CI 已通过 #207"
-    assert html =~ "Merge sync is healthy."
+    assert html =~ "任务进度"
+    assert html =~ "PR 已打开"
+    assert html =~ "CI 通过"
+    assert html =~ "可合并"
+    assert html =~ "https://example.invalid/pr/17"
+    assert html =~ "https://example.invalid/pipeline/207"
 
     pause_html =
       view

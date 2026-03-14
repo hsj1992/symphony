@@ -614,7 +614,7 @@ pre,
 
 .focus-ribbon {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0.9rem;
 }
 
@@ -672,6 +672,27 @@ pre,
 .run-ledger-route {
   font-size: 0.8rem;
   color: var(--muted);
+}
+
+.run-ledger-sparkline {
+  display: flex;
+  gap: 3px;
+  margin-top: 0.35rem;
+}
+
+.sparkline-segment {
+  height: 4px;
+  width: 14px;
+  background: var(--line);
+  border-radius: 2px;
+}
+
+.sparkline-segment-active {
+  background: var(--accent);
+}
+
+.sparkline-segment-done {
+  background: color-mix(in srgb, var(--accent) 40%, var(--line-strong) 60%);
 }
 
 .run-ledger-meta {
@@ -834,11 +855,53 @@ pre,
   letter-spacing: -0.01em;
 }
 
+.progress-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
 .progress-copy {
   margin: 0.35rem 0 0;
   color: var(--muted);
   font-size: 0.88rem;
   line-height: 1.5;
+}
+
+.progress-badge-row {
+  margin-top: 0.75rem;
+  padding-top: 0.75rem;
+  border-top: 1px dashed var(--line);
+}
+
+.status-badge-embedded,
+.status-badge-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 1.9rem;
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 118, 110, 0.15);
+  background: color-mix(in srgb, #fff 88%, var(--accent-soft) 12%);
+  color: var(--accent-ink);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.status-badge-link {
+  transition: all 140ms ease;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.status-badge-link:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(16, 163, 127, 0.15);
 }
 
 .action-row {
