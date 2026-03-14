@@ -753,9 +753,13 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
               <section>
                 <h3 class="section-subtitle"><%= tr(@lang, "Actions", "控制动作") %></h3>
-                <p class="section-copy action-copy"><%= action_guidance(@status, @lang) %></p>
+                <article class={guidance_callout_class(@status)}>
+                  <p class="guidance-eyebrow"><%= tr(@lang, "What the cockpit suggests next", "控制台建议的下一步") %></p>
+                  <p class="guidance-copy"><%= action_guidance(@status, @lang) %></p>
+                </article>
                 <%= if @action_feedback do %>
                   <div class={action_feedback_class(@action_feedback)}>
+                    <span class="feedback-icon"><%= action_feedback_icon(@action_feedback, @lang) %></span>
                     <strong><%= field(@action_feedback, "label") %></strong>
                     <span><%= field(@action_feedback, "message") %></span>
                     <span :if={field(@action_feedback, "at")} class="mono"><%= field(@action_feedback, "at") %></span>
@@ -1240,6 +1244,20 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     end
   end
 
+  defp action_feedback_icon(feedback, "en") do
+    case field(feedback, "kind") do
+      "error" -> "Error"
+      _ -> "Done"
+    end
+  end
+
+  defp action_feedback_icon(feedback, _lang) do
+    case field(feedback, "kind") do
+      "error" -> "失败"
+      _ -> "完成"
+    end
+  end
+
   defp heartbeat_label(now, "en"), do: "Heartbeat #{Calendar.strftime(now, "%H:%M:%S")}"
   defp heartbeat_label(now, _lang), do: "心跳 #{Calendar.strftime(now, "%H:%M:%S")}"
 
@@ -1325,6 +1343,23 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp phase_step_class("complete"), do: "progress-step progress-step-complete"
   defp phase_step_class("current"), do: "progress-step progress-step-current"
   defp phase_step_class(_state), do: "progress-step progress-step-upcoming"
+
+  defp guidance_callout_class(status) do
+    runtime_paused = field(field(status, "runtime_control"), "paused") in [true, "true"]
+    issue_held = field(field(status, "issue_control"), "held") in [true, "true"]
+    runtime_scope = runtime_scope(status)
+
+    cond do
+      runtime_paused or issue_held ->
+        "guidance-callout guidance-callout-warning"
+
+      runtime_scope in ["running", "retrying"] ->
+        "guidance-callout guidance-callout-active"
+
+      true ->
+        "guidance-callout guidance-callout-neutral"
+    end
+  end
 
   defp meter_width_style(percent) when is_integer(percent),
     do: "width: #{min(max(percent, 0), 100)}%;"
