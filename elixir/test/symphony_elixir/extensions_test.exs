@@ -1306,7 +1306,7 @@ defmodule SymphonyElixir.ExtensionsTest do
 
     start_test_endpoint(orchestrator: orchestrator_name, snapshot_timeout_ms: 50)
 
-    {:ok, view, html} = live(build_conn(), "/")
+    {:ok, view, html} = live(build_conn(), "/dashboard")
     assert html =~ "Operations Dashboard"
     assert html =~ "MT-HTTP"
     assert html =~ "MT-RETRY"
@@ -1370,7 +1370,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       snapshot_timeout_ms: 5
     )
 
-    {:ok, _view, html} = live(build_conn(), "/")
+    {:ok, _view, html} = live(build_conn(), "/dashboard")
     assert html =~ "Snapshot unavailable"
     assert html =~ "snapshot_unavailable"
   end
@@ -1379,10 +1379,11 @@ defmodule SymphonyElixir.ExtensionsTest do
     Application.put_env(:symphony_elixir, :console_client_module, FakeConsoleClient)
     start_test_endpoint([])
 
-    {:ok, view, html} = live(build_conn(), "/console")
-    assert html =~ "工作流控制台"
+    {:ok, view, html} = live(build_conn(), "/")
+    assert html =~ "运行控制台"
     assert html =~ "PROJ-101"
     assert html =~ "自动 15s"
+    assert html =~ "运行态总览"
 
     html =
       view
@@ -1475,7 +1476,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     start_test_endpoint([])
 
     {:ok, view, html} = live(build_conn(), "/console?lang=en")
-    assert html =~ "Bridge Console"
+    assert html =~ "Operator Cockpit"
     assert html =~ "Auto 15s"
     assert html =~ "Load issue"
 
@@ -1499,8 +1500,21 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> element("#lang-zh")
       |> render_click()
 
-    assert zh_html =~ "工作流控制台"
+    assert zh_html =~ "运行控制台"
     assert zh_html =~ "加载议题"
+  end
+
+  test "root and /console both render the unified cockpit" do
+    Application.put_env(:symphony_elixir, :console_client_module, FakeConsoleClient)
+    start_test_endpoint([])
+
+    {:ok, _root_view, root_html} = live(build_conn(), "/?lang=en")
+    {:ok, _console_view, console_html} = live(build_conn(), "/console?lang=en")
+
+    assert root_html =~ "Operator Cockpit"
+    assert root_html =~ "Runtime Overview"
+    assert console_html =~ "Operator Cockpit"
+    assert console_html =~ "Runtime Overview"
   end
 
   test "bridge console switches adapters from query params and ui controls" do
@@ -1539,7 +1553,7 @@ defmodule SymphonyElixir.ExtensionsTest do
       |> element("#lang-zh")
       |> render_click()
 
-    assert zh_html =~ "工作流控制台"
+    assert zh_html =~ "运行控制台"
     assert zh_html =~ "Alpha Project"
   end
 
@@ -1554,7 +1568,7 @@ defmodule SymphonyElixir.ExtensionsTest do
     assert html =~ ~s(value="12")
 
     render_change(view, "set_profile", %{"profile" => "ops-triage"})
-    assert_patch(view, "/console?lang=en&profile=ops-triage")
+    assert_patch(view, "/?lang=en&profile=ops-triage")
     ops_html = render(view)
     assert ops_html =~ "Ops Triage"
     assert ops_html =~ "Enable all logs and prioritize runtime state by default."

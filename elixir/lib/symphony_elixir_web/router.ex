@@ -24,8 +24,9 @@ defmodule SymphonyElixirWeb.Router do
   scope "/", SymphonyElixirWeb do
     pipe_through(:browser)
 
-    live("/", DashboardLive, :index)
+    live("/", ConsoleLive, :index)
     live("/console", ConsoleLive, :index)
+    live("/dashboard", DashboardLive, :index)
   end
 
   scope "/", SymphonyElixirWeb do

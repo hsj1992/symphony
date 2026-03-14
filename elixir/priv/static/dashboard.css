@@ -556,6 +556,29 @@ pre,
   margin: 0 0 0.9rem;
 }
 
+.action-feedback {
+  display: grid;
+  gap: 0.2rem;
+  margin: 0 0 1rem;
+  padding: 0.8rem 0.95rem;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: #f8fafc;
+  color: var(--ink);
+}
+
+.action-feedback-success {
+  background: color-mix(in srgb, #fff 86%, var(--accent) 14%);
+  border-color: rgba(16, 163, 127, 0.24);
+  color: var(--accent-ink);
+}
+
+.action-feedback-error {
+  background: color-mix(in srgb, #fff 85%, var(--danger-soft) 15%);
+  border-color: #f6d3cf;
+  color: var(--danger);
+}
+
 .subtle-button:disabled {
   cursor: not-allowed;
   opacity: 0.48;

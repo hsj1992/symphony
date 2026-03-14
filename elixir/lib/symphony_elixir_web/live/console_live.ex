@@ -4,9 +4,11 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   """
 
   use Phoenix.LiveView, layout: {SymphonyElixirWeb.Layouts, :app}
+  alias SymphonyElixirWeb.{Endpoint, ObservabilityPubSub, Presenter}
 
   @default_lang "zh"
   @default_refresh_ms 15_000
+  @runtime_tick_ms 1_000
 
   @impl true
   def mount(_params, _session, socket) do
@@ -25,8 +27,11 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       |> assign(:meta, nil)
       |> assign(:runs, [])
       |> assign(:status, nil)
+      |> assign(:runtime_payload, load_runtime_payload())
+      |> assign(:now, DateTime.utc_now())
       |> assign(:selected_issue, nil)
       |> assign(:error_message, nil)
+      |> assign(:action_feedback, nil)
       |> assign(:log_options, log_options(lang))
       |> assign(:refresh_options, refresh_options(lang))
       |> assign(:issue_query, "")
@@ -44,7 +49,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     socket = refresh_console(socket, load_status?: false)
 
     if connected?(socket) do
+      :ok = ObservabilityPubSub.subscribe()
       schedule_refresh(socket.assigns.refresh_interval_ms)
+      schedule_runtime_tick()
     end
 
     {:ok, socket}
@@ -72,6 +79,20 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   def handle_info(:refresh_tick, socket) do
     schedule_refresh(socket.assigns.refresh_interval_ms)
     {:noreply, refresh_console(socket, load_status?: not is_nil(socket.assigns.selected_issue))}
+  end
+
+  @impl true
+  def handle_info(:runtime_tick, socket) do
+    schedule_runtime_tick()
+    {:noreply, assign(socket, :now, DateTime.utc_now())}
+  end
+
+  @impl true
+  def handle_info(:observability_updated, socket) do
+    {:noreply,
+     socket
+     |> assign(:runtime_payload, load_runtime_payload())
+     |> assign(:now, DateTime.utc_now())}
   end
 
   @impl true
@@ -243,9 +264,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         <div class="hero-grid">
           <div>
             <p class="eyebrow"><%= tr(@lang, "Symphony Workflow", "Symphony 工作流") %></p>
-            <h1 class="hero-title"><%= tr(@lang, "Bridge Console", "工作流控制台") %></h1>
+            <h1 class="hero-title"><%= tr(@lang, "Operator Cockpit", "运行控制台") %></h1>
             <p class="hero-copy">
-              <%= tr(@lang, "This is the standalone Symphony workflow console. Recent runs, issue detail, and control actions all flow through the bridge API instead of being embedded into the product application.", "这是独立于业务前后端的 Symphony 工作流控制台。最近运行、议题详情和控制动作都通过 bridge API 完成，而不是嵌入到产品系统里。") %>
+              <%= tr(@lang, "Runtime observability, bridge-backed issue control, and delivery state now live on one operator page.", "运行态观测、bridge 驱动的议题控制、以及交付状态现在收敛在同一个操作台页面。") %>
             </p>
           </div>
 
@@ -306,6 +327,117 @@ defmodule SymphonyElixirWeb.ConsoleLive do
           <p class="error-copy"><%= @error_message %></p>
         </section>
       <% end %>
+
+      <section class="section-card">
+        <div class="section-header">
+          <div>
+            <h2 class="section-title"><%= tr(@lang, "Runtime Overview", "运行态总览") %></h2>
+            <p class="section-copy"><%= tr(@lang, "Live runtime state from the current Symphony process, refreshed via pubsub and timer ticks.", "当前 Symphony 进程的实时运行态，通过 pubsub 与定时器持续刷新。") %></p>
+          </div>
+        </div>
+
+        <%= if runtime_error = field(@runtime_payload, "error") do %>
+          <p class="empty-state"><%= runtime_error_message(runtime_error, @lang) %></p>
+        <% else %>
+          <section class="metric-grid">
+            <article class="metric-card">
+              <p class="metric-label"><%= tr(@lang, "Running", "运行中") %></p>
+              <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "running") || 0 %></p>
+              <p class="metric-detail"><%= tr(@lang, "Active issue sessions in the current runtime.", "当前 runtime 中的活跃议题会话数。") %></p>
+            </article>
+
+            <article class="metric-card">
+              <p class="metric-label"><%= tr(@lang, "Retrying", "重试队列") %></p>
+              <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "retrying") || 0 %></p>
+              <p class="metric-detail"><%= tr(@lang, "Issues waiting for the next retry window.", "等待下一次重试窗口的议题数。") %></p>
+            </article>
+
+            <article class="metric-card">
+              <p class="metric-label"><%= tr(@lang, "Total tokens", "总 token") %></p>
+              <p class="metric-value numeric"><%= format_int(field(field(@runtime_payload, "codex_totals"), "total_tokens")) %></p>
+              <p class="metric-detail numeric">
+                <%= tr(@lang, "In", "输入") %> <%= format_int(field(field(@runtime_payload, "codex_totals"), "input_tokens")) %>
+                /
+                <%= tr(@lang, "Out", "输出") %> <%= format_int(field(field(@runtime_payload, "codex_totals"), "output_tokens")) %>
+              </p>
+            </article>
+
+            <article class="metric-card">
+              <p class="metric-label"><%= tr(@lang, "Runtime", "运行时长") %></p>
+              <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@runtime_payload, @now)) %></p>
+              <p class="metric-detail"><%= tr(@lang, "Total Codex runtime across completed and active sessions.", "已完成与进行中的会话累计运行时长。") %></p>
+            </article>
+          </section>
+
+          <div class="section-stack">
+            <section>
+              <h3 class="section-subtitle"><%= tr(@lang, "Running sessions", "运行会话") %></h3>
+              <%= if normalized_runtime_entries(field(@runtime_payload, "running")) == [] do %>
+                <p class="empty-state"><%= tr(@lang, "No active sessions.", "当前没有活跃会话。") %></p>
+              <% else %>
+                <div class="table-wrap">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th><%= tr(@lang, "Issue", "议题") %></th>
+                        <th><%= tr(@lang, "State", "状态") %></th>
+                        <th><%= tr(@lang, "Session", "会话") %></th>
+                        <th><%= tr(@lang, "Runtime / turns", "运行时长 / 轮次") %></th>
+                        <th><%= tr(@lang, "Codex update", "Codex 更新") %></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr :for={entry <- normalized_runtime_entries(field(@runtime_payload, "running"))}>
+                        <td>
+                          <button type="button" class="issue-link issue-button" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
+                            <%= field(entry, "issue_identifier") %>
+                          </button>
+                        </td>
+                        <td><span class={state_badge_class(field(entry, "state"))}><%= field(entry, "state") || tr(@lang, "n/a", "未提供") %></span></td>
+                        <td class="mono"><%= field(entry, "session_id") || tr(@lang, "n/a", "未提供") %></td>
+                        <td class="numeric"><%= format_runtime_and_turns(field(entry, "started_at"), field(entry, "turn_count"), @now) %></td>
+                        <td><%= field(entry, "last_message") || field(entry, "last_event") || tr(@lang, "n/a", "未提供") %></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              <% end %>
+            </section>
+
+            <section>
+              <h3 class="section-subtitle"><%= tr(@lang, "Retry queue", "重试队列") %></h3>
+              <%= if normalized_runtime_entries(field(@runtime_payload, "retrying")) == [] do %>
+                <p class="empty-state"><%= tr(@lang, "No issues are currently backing off.", "当前没有议题在退避重试。") %></p>
+              <% else %>
+                <div class="table-wrap">
+                  <table class="data-table">
+                    <thead>
+                      <tr>
+                        <th><%= tr(@lang, "Issue", "议题") %></th>
+                        <th><%= tr(@lang, "Attempt", "尝试") %></th>
+                        <th><%= tr(@lang, "Due at", "预计重试时间") %></th>
+                        <th><%= tr(@lang, "Error", "错误") %></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr :for={entry <- normalized_runtime_entries(field(@runtime_payload, "retrying"))}>
+                        <td>
+                          <button type="button" class="issue-link issue-button" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
+                            <%= field(entry, "issue_identifier") %>
+                          </button>
+                        </td>
+                        <td><%= field(entry, "attempt") || tr(@lang, "n/a", "未提供") %></td>
+                        <td class="mono"><%= field(entry, "due_at") || tr(@lang, "n/a", "未提供") %></td>
+                        <td><%= field(entry, "error") || tr(@lang, "n/a", "未提供") %></td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              <% end %>
+            </section>
+          </div>
+        <% end %>
+      </section>
 
       <section class="section-card">
         <div class="section-header">
@@ -584,6 +716,13 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               <section>
                 <h3 class="section-subtitle"><%= tr(@lang, "Actions", "控制动作") %></h3>
                 <p class="section-copy action-copy"><%= action_guidance(@status, @lang) %></p>
+                <%= if @action_feedback do %>
+                  <div class={action_feedback_class(@action_feedback)}>
+                    <strong><%= field(@action_feedback, "label") %></strong>
+                    <span><%= field(@action_feedback, "message") %></span>
+                    <span :if={field(@action_feedback, "at")} class="mono"><%= field(@action_feedback, "at") %></span>
+                  </div>
+                <% end %>
                 <div class="action-row">
                   <button id="pause-run" type="button" class="subtle-button" phx-click="pause" disabled={action_disabled?(@status, "pause")}><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
                   <button id="resume-run" type="button" class="subtle-button" phx-click="resume" disabled={action_disabled?(@status, "resume")}><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
@@ -810,11 +949,24 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       {:ok, response} ->
         socket
         |> assign(:status, field(response, "status") || socket.assigns.status)
+        |> assign(:action_feedback, %{
+          "kind" => "success",
+          "label" => tr(socket.assigns.lang, "Action applied", "动作已执行"),
+          "message" => action_success_message(socket.assigns.lang, params["action"]),
+          "at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        })
         |> put_flash(:info, action_success_message(socket.assigns.lang, params["action"]))
         |> refresh_console(load_status?: true)
 
       {:error, reason} ->
-        put_flash(socket, :error, error_message(socket.assigns.lang, reason))
+        socket
+        |> assign(:action_feedback, %{
+          "kind" => "error",
+          "label" => tr(socket.assigns.lang, "Action failed", "动作失败"),
+          "message" => error_message(socket.assigns.lang, reason),
+          "at" => DateTime.utc_now() |> DateTime.truncate(:second) |> DateTime.to_iso8601()
+        })
+        |> put_flash(:error, error_message(socket.assigns.lang, reason))
     end
   end
 
@@ -1015,6 +1167,21 @@ defmodule SymphonyElixirWeb.ConsoleLive do
     value == selected
   end
 
+  defp normalized_runtime_entries(nil), do: []
+  defp normalized_runtime_entries(entries) when is_list(entries), do: entries
+  defp normalized_runtime_entries(_entries), do: []
+
+  defp runtime_error_message(%{"message" => message, "code" => code}, "en"),
+    do: "#{message} (#{code})"
+
+  defp runtime_error_message(%{"message" => message, "code" => code}, _lang),
+    do: "#{message}（#{code}）"
+
+  defp runtime_error_message(message, _lang) when is_binary(message), do: message
+
+  defp runtime_error_message(_error, "en"), do: "Runtime snapshot unavailable"
+  defp runtime_error_message(_error, _lang), do: "运行态快照不可用"
+
   defp action_success_message(lang, "pause"), do: tr(lang, "Pause recorded", "已记录暂停请求")
   defp action_success_message(lang, "resume"), do: tr(lang, "Continue recorded", "已记录继续请求")
   defp action_success_message(lang, "cancel"), do: tr(lang, "Current run cancelled", "已取消当前运行")
@@ -1025,6 +1192,15 @@ defmodule SymphonyElixirWeb.ConsoleLive do
   defp action_success_message(lang, "instruction"), do: tr(lang, "Instruction queued for the next restart", "已将指令排队，等待下次重启应用")
   defp action_success_message(lang, "steer"), do: tr(lang, "Instruction queued and restart requested", "已排队指令，并请求重启应用")
   defp action_success_message(lang, _action), do: tr(lang, "Action recorded", "已记录动作")
+
+  defp action_feedback_class(nil), do: "action-feedback"
+
+  defp action_feedback_class(feedback) when is_map(feedback) do
+    case field(feedback, "kind") do
+      "error" -> "action-feedback action-feedback-error"
+      _ -> "action-feedback action-feedback-success"
+    end
+  end
 
   defp normalized_checks(nil), do: []
   defp normalized_checks(checks) when is_map(checks), do: Enum.sort_by(checks, fn {key, _value} -> to_string(key) end)
@@ -1651,6 +1827,18 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp error_message(lang, reason), do: tr(lang, "Bridge request failed: #{inspect(reason)}", "Bridge 请求失败: #{inspect(reason)}")
 
+  defp load_runtime_payload do
+    Presenter.state_payload(orchestrator(), snapshot_timeout_ms())
+  end
+
+  defp orchestrator do
+    Endpoint.config(:orchestrator) || SymphonyElixir.Orchestrator
+  end
+
+  defp snapshot_timeout_ms do
+    Endpoint.config(:snapshot_timeout_ms) || 15_000
+  end
+
   defp state_badge_class(value) when value in [nil, ""], do: "state-badge"
 
   defp state_badge_class(value) do
@@ -1679,8 +1867,66 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp present?(value), do: not is_nil(value) and value != "" and value != []
 
+  defp format_int(value) when is_integer(value) do
+    value
+    |> Integer.to_string()
+    |> String.graphemes()
+    |> Enum.reverse()
+    |> Enum.chunk_every(3)
+    |> Enum.map_join(",", &Enum.reverse/1)
+    |> String.reverse()
+  end
+
+  defp format_int(_value), do: "n/a"
+
+  defp completed_runtime_seconds(payload) do
+    field(field(payload, "codex_totals"), "seconds_running") || 0
+  end
+
+  defp total_runtime_seconds(payload, now) do
+    completed_runtime_seconds(payload) +
+      Enum.reduce(normalized_runtime_entries(field(payload, "running")), 0, fn entry, total ->
+        total + runtime_seconds_from_started_at(field(entry, "started_at"), now)
+      end)
+  end
+
+  defp format_runtime_and_turns(started_at, turn_count, now) when is_integer(turn_count) and turn_count > 0 do
+    "#{format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))} / #{turn_count}"
+  end
+
+  defp format_runtime_and_turns(started_at, _turn_count, now),
+    do: format_runtime_seconds(runtime_seconds_from_started_at(started_at, now))
+
+  defp format_runtime_seconds(seconds) when is_integer(seconds) and seconds >= 3600 do
+    hours = div(seconds, 3600)
+    minutes = div(rem(seconds, 3600), 60)
+    "#{hours}h #{minutes}m"
+  end
+
+  defp format_runtime_seconds(seconds) when is_integer(seconds) and seconds >= 60 do
+    minutes = div(seconds, 60)
+    remaining = rem(seconds, 60)
+    "#{minutes}m #{remaining}s"
+  end
+
+  defp format_runtime_seconds(seconds) when is_integer(seconds) and seconds >= 0,
+    do: "#{seconds}s"
+
+  defp format_runtime_seconds(_seconds), do: "0s"
+
+  defp runtime_seconds_from_started_at(nil, _now), do: 0
+
+  defp runtime_seconds_from_started_at(started_at, now) do
+    with {:ok, started_at_dt, _offset} <- DateTime.from_iso8601(to_string(started_at)) do
+      max(DateTime.diff(now, started_at_dt, :second), 0)
+    else
+      _ -> 0
+    end
+  end
+
   defp schedule_refresh(0), do: :ok
   defp schedule_refresh(interval_ms), do: Process.send_after(self(), :refresh_tick, interval_ms)
+  defp schedule_runtime_tick, do: Process.send_after(self(), :runtime_tick, @runtime_tick_ms)
 
   defp normalize_lang("en"), do: "en"
   defp normalize_lang("zh"), do: "zh"
@@ -1695,9 +1941,9 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       |> URI.encode_query()
 
     if query == "" do
-      "/console"
+      "/"
     else
-      "/console?" <> query
+      "/?" <> query
     end
   end
 

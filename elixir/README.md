@@ -155,8 +155,9 @@ codex:
 
 The observability UI now runs on a minimal Phoenix stack:
 
-- LiveView for the dashboard at `/`
-- LiveView bridge console at `/console`
+- Unified LiveView operator cockpit at `/`
+- `/console` kept as an alias to the same cockpit
+- Legacy runtime-only dashboard at `/dashboard`
 - JSON API for operational debugging under `/api/v1/*`
 - Bandit as the HTTP server
 - Phoenix dependency static assets for the LiveView client bootstrap
@@ -217,8 +218,9 @@ still letting the console inspect and control project workflow state.
 
 Then open:
 
-- `http://127.0.0.1:<port>/` for runtime observability
-- `http://127.0.0.1:<port>/console` for the bridge-backed console
+- `http://127.0.0.1:<port>/` for the unified operator cockpit
+- `http://127.0.0.1:<port>/console` as a compatible alias
+- `http://127.0.0.1:<port>/dashboard` for the legacy runtime-only view
 
 ## Project Layout
 
