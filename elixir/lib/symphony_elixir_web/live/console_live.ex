@@ -332,247 +332,248 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         </section>
       <% end %>
 
-      <section class="cockpit-ribbon">
-        <article class="ribbon-card ribbon-card-runtime">
-          <p class="metric-label"><%= tr(@lang, "Runtime pulse", "运行脉搏") %></p>
-          <h3 class="ribbon-title"><%= heartbeat_label(@now, @lang) %></h3>
-          <p class="ribbon-copy"><%= heartbeat_copy(@runtime_payload, @lang) %></p>
-          <div class="activity-meter">
-            <span style={meter_width_style(runtime_activity_percent(@runtime_payload))}></span>
-          </div>
-        </article>
+      <div class="cockpit-layout">
+        <aside class="operator-sidebar">
+          <section class="section-card">
+            <div class="section-header section-header-tight">
+              <div>
+                <h2 class="section-title"><%= tr(@lang, "Load context", "加载上下文") %></h2>
+                <p class="section-copy"><%= tr(@lang, "Pick an issue, tune refresh, and bring doctor/workpad/log context into the cockpit.", "选择议题、调整刷新，并把 doctor / workpad / 日志上下文带进控制台。") %></p>
+              </div>
+              <button type="button" class="subtle-button" phx-click="refresh"><%= tr(@lang, "Refresh now", "立即刷新") %></button>
+            </div>
 
-        <article class="ribbon-card">
-          <p class="metric-label"><%= tr(@lang, "Issue spotlight", "当前任务焦点") %></p>
-          <h3 class="ribbon-title mono"><%= spotlight_title(@status, @lang) %></h3>
-          <p class="ribbon-copy"><%= spotlight_summary(@status, @lang) %></p>
-        </article>
+            <form id="issue-query-form" class="toolbar-form toolbar-form-sidebar" phx-submit="load_issue">
+              <div :if={selected_profile(@profiles, @selected_profile)} class="toolbar-field toolbar-field-full">
+                <span><%= tr(@lang, "Execution profile", "执行模板") %></span>
+                <div class="inspector-card">
+                  <div class="inspector-card-head">
+                    <h4><%= profile_label(selected_profile(@profiles, @selected_profile), @lang) %></h4>
+                  </div>
+                  <p class="section-copy">
+                    <%= profile_description(selected_profile(@profiles, @selected_profile), @lang) %>
+                  </p>
+                </div>
+              </div>
 
-        <article class="ribbon-card">
-          <p class="metric-label"><%= tr(@lang, "Operator feedback", "操作反馈") %></p>
-          <h3 class="ribbon-title"><%= operator_feedback_title(@action_feedback, @lang) %></h3>
-          <p class="ribbon-copy"><%= operator_feedback_copy(@action_feedback, @status, @lang) %></p>
-        </article>
-      </section>
+              <label class="toolbar-field toolbar-field-full">
+                <span><%= tr(@lang, "Issue key", "议题编号") %></span>
+                <input class="form-input" type="text" name="issue" value={@issue_query} placeholder={tr(@lang, "For example PROJ-123", "例如 PROJ-123")} />
+              </label>
 
-      <section class="section-card">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title"><%= tr(@lang, "Runtime Overview", "运行态总览") %></h2>
-            <p class="section-copy"><%= tr(@lang, "Live runtime state from the current Symphony process, refreshed via pubsub and timer ticks.", "当前 Symphony 进程的实时运行态，通过 pubsub 与定时器持续刷新。") %></p>
-          </div>
-        </div>
+              <div class="toolbar-inline-grid">
+                <label class="toolbar-field">
+                  <span><%= tr(@lang, "Branch override", "分支覆盖") %></span>
+                  <input class="form-input" type="text" name="branch" value={@branch_override} placeholder={tr(@lang, "Optional", "可选")} />
+                </label>
 
-        <%= if runtime_error = field(@runtime_payload, "error") do %>
-          <p class="empty-state"><%= runtime_error_message(runtime_error, @lang) %></p>
-        <% else %>
-          <section class="metric-grid">
-            <article class="metric-card">
-              <p class="metric-label"><%= tr(@lang, "Running", "运行中") %></p>
-              <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "running") || 0 %></p>
-              <p class="metric-detail"><%= tr(@lang, "Active issue sessions in the current runtime.", "当前 runtime 中的活跃议题会话数。") %></p>
-              <div class="activity-meter"><span style={meter_width_style(min((field(field(@runtime_payload, "counts"), "running") || 0) * 50, 100))}></span></div>
+                <label class="toolbar-field">
+                  <span><%= tr(@lang, "Events", "事件条数") %></span>
+                  <input class="form-input" type="number" min="1" max="50" name="events" value={@events_limit} />
+                </label>
+              </div>
+
+              <div class="toolbar-inline-grid">
+                <label class="toolbar-field">
+                  <span><%= tr(@lang, "Logs", "日志范围") %></span>
+                  <select class="form-input" name="include_logs">
+                    <option :for={{label, value} <- @log_options} value={value} selected={value == @include_logs}>
+                      <%= label %>
+                    </option>
+                  </select>
+                </label>
+
+                <label class="toolbar-field">
+                  <span><%= tr(@lang, "Auto refresh", "自动刷新") %></span>
+                  <select class="form-input" name="refresh_interval" phx-change="set_refresh_interval">
+                    <option :for={{label, value} <- @refresh_options} value={value} selected={refresh_selected?(value, @refresh_interval_ms)}>
+                      <%= label %>
+                    </option>
+                  </select>
+                </label>
+              </div>
+
+              <div class="toolbar-checkbox-grid">
+                <label class="checkbox-field">
+                  <input type="checkbox" name="doctor" value="true" checked={@include_doctor} />
+                  <span><%= tr(@lang, "Include doctor", "包含 doctor") %></span>
+                </label>
+
+                <label class="checkbox-field">
+                  <input type="checkbox" name="workpad" value="true" checked={@include_workpad} />
+                  <span><%= tr(@lang, "Include workpad", "包含 workpad") %></span>
+                </label>
+              </div>
+
+              <button type="submit" class="subtle-button subtle-button-primary"><%= tr(@lang, "Load issue", "加载议题") %></button>
+            </form>
+          </section>
+
+          <section class="section-card">
+            <div class="section-header section-header-tight">
+              <div>
+                <h2 class="section-title"><%= tr(@lang, "Recent runs", "最近运行") %></h2>
+                <p class="section-copy"><%= tr(@lang, "Bridge-backed runs that can be pulled into the execution stage instantly.", "bridge 返回的最近运行，可一键拉入执行主舞台。") %></p>
+              </div>
+            </div>
+
+            <%= if @runs == [] do %>
+              <p class="empty-state"><%= tr(@lang, "The bridge has not returned any recent runs yet.", "bridge 还没有返回最近运行数据。") %></p>
+            <% else %>
+              <div class="run-board run-board-sidebar">
+                <article :for={run <- @runs} class="run-card">
+                  <div class="run-card-head">
+                    <button
+                      type="button"
+                      class="issue-link issue-button run-card-issue"
+                      phx-click="select_issue"
+                      phx-value-issue={field(run, "issue")}
+                    >
+                      <%= field(run, "issue") %>
+                    </button>
+                    <span class={state_badge_class(field(run, "phase"))}><%= field(run, "phase") || tr(@lang, "n/a", "未提供") %></span>
+                  </div>
+                  <p class="run-card-summary"><%= recent_run_summary(run, @lang) %></p>
+                  <div class="run-card-meta">
+                    <span><%= tr(@lang, "Route", "路由") %>: <strong><%= route_hint_text(run, @lang) %></strong></span>
+                    <span class="mono"><%= field(run, "updated_at") || tr(@lang, "n/a", "未提供") %></span>
+                  </div>
+                </article>
+              </div>
+            <% end %>
+          </section>
+
+          <section class="section-card">
+            <div class="section-header section-header-tight">
+              <div>
+                <h2 class="section-title"><%= tr(@lang, "Runtime Overview", "运行态总览") %></h2>
+                <p class="section-copy"><%= tr(@lang, "Observe runtime pulse, active sessions, and retry pressure without leaving the sidebar.", "在侧栏中直接观察 runtime 脉搏、活跃会话与重试压力。") %></p>
+              </div>
+            </div>
+
+            <article class="ribbon-card ribbon-card-runtime ribbon-card-sidebar">
+              <p class="metric-label"><%= tr(@lang, "Runtime pulse", "运行脉搏") %></p>
+              <h3 class="ribbon-title"><%= heartbeat_label(@now, @lang) %></h3>
+              <p class="ribbon-copy"><%= heartbeat_copy(@runtime_payload, @lang) %></p>
+              <div class="activity-meter">
+                <span style={meter_width_style(runtime_activity_percent(@runtime_payload))}></span>
+              </div>
             </article>
 
-            <article class="metric-card">
-              <p class="metric-label"><%= tr(@lang, "Retrying", "重试队列") %></p>
-              <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "retrying") || 0 %></p>
-              <p class="metric-detail"><%= tr(@lang, "Issues waiting for the next retry window.", "等待下一次重试窗口的议题数。") %></p>
-              <div class="activity-meter"><span style={meter_width_style(min((field(field(@runtime_payload, "counts"), "retrying") || 0) * 34, 100))}></span></div>
+            <%= if runtime_error = field(@runtime_payload, "error") do %>
+              <p class="empty-state"><%= runtime_error_message(runtime_error, @lang) %></p>
+            <% else %>
+              <section class="metric-grid runtime-sidebar-grid">
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Running", "运行中") %></p>
+                  <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "running") || 0 %></p>
+                  <p class="metric-detail"><%= tr(@lang, "Active sessions", "活跃会话") %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Retrying", "重试中") %></p>
+                  <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "retrying") || 0 %></p>
+                  <p class="metric-detail"><%= tr(@lang, "Backoff queue", "退避队列") %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Total tokens", "总 token") %></p>
+                  <p class="metric-value numeric"><%= format_int(field(field(@runtime_payload, "codex_totals"), "total_tokens")) %></p>
+                  <p class="metric-detail"><%= tr(@lang, "All active + completed runs", "活跃与已完成运行总计") %></p>
+                </article>
+
+                <article class="metric-card">
+                  <p class="metric-label"><%= tr(@lang, "Runtime", "运行时长") %></p>
+                  <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@runtime_payload, @now)) %></p>
+                  <p class="metric-detail"><%= tr(@lang, "Accumulated runtime", "累计运行时长") %></p>
+                </article>
+              </section>
+
+              <div class="section-stack section-stack-compact">
+                <section class="runtime-table-card">
+                  <h3 class="section-subtitle"><%= tr(@lang, "Running sessions", "运行会话") %></h3>
+                  <%= if normalized_runtime_entries(field(@runtime_payload, "running")) == [] do %>
+                    <p class="empty-state"><%= tr(@lang, "No active sessions.", "当前没有活跃会话。") %></p>
+                  <% else %>
+                    <div class="table-wrap">
+                      <table class="data-table data-table-compact">
+                        <thead>
+                          <tr>
+                            <th><%= tr(@lang, "Issue", "议题") %></th>
+                            <th><%= tr(@lang, "State", "状态") %></th>
+                            <th><%= tr(@lang, "Update", "更新") %></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr :for={entry <- normalized_runtime_entries(field(@runtime_payload, "running"))}>
+                            <td>
+                              <button type="button" class="issue-link issue-button" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
+                                <%= field(entry, "issue_identifier") %>
+                              </button>
+                            </td>
+                            <td><span class={state_badge_class(field(entry, "state"))}><%= field(entry, "state") || tr(@lang, "n/a", "未提供") %></span></td>
+                            <td><%= field(entry, "last_event") || tr(@lang, "n/a", "未提供") %></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  <% end %>
+                </section>
+
+                <section class="runtime-table-card">
+                  <h3 class="section-subtitle"><%= tr(@lang, "Retry queue", "重试队列") %></h3>
+                  <%= if normalized_runtime_entries(field(@runtime_payload, "retrying")) == [] do %>
+                    <p class="empty-state"><%= tr(@lang, "No issues are currently backing off.", "当前没有议题在退避重试。") %></p>
+                  <% else %>
+                    <div class="table-wrap">
+                      <table class="data-table data-table-compact">
+                        <thead>
+                          <tr>
+                            <th><%= tr(@lang, "Issue", "议题") %></th>
+                            <th><%= tr(@lang, "Due", "重试时间") %></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr :for={entry <- normalized_runtime_entries(field(@runtime_payload, "retrying"))}>
+                            <td>
+                              <button type="button" class="issue-link issue-button" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
+                                <%= field(entry, "issue_identifier") %>
+                              </button>
+                            </td>
+                            <td class="mono"><%= field(entry, "due_at") || tr(@lang, "n/a", "未提供") %></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  <% end %>
+                </section>
+              </div>
+            <% end %>
+          </section>
+        </aside>
+
+        <main class="operator-main">
+          <section class="focus-ribbon">
+            <article class="ribbon-card">
+              <p class="metric-label"><%= tr(@lang, "Issue spotlight", "当前任务焦点") %></p>
+              <h3 class="ribbon-title mono"><%= spotlight_title(@status, @lang) %></h3>
+              <p class="ribbon-copy"><%= spotlight_summary(@status, @lang) %></p>
             </article>
 
-            <article class="metric-card">
-              <p class="metric-label"><%= tr(@lang, "Total tokens", "总 token") %></p>
-              <p class="metric-value numeric"><%= format_int(field(field(@runtime_payload, "codex_totals"), "total_tokens")) %></p>
-              <p class="metric-detail numeric">
-                <%= tr(@lang, "In", "输入") %> <%= format_int(field(field(@runtime_payload, "codex_totals"), "input_tokens")) %>
-                /
-                <%= tr(@lang, "Out", "输出") %> <%= format_int(field(field(@runtime_payload, "codex_totals"), "output_tokens")) %>
-              </p>
+            <article class="ribbon-card">
+              <p class="metric-label"><%= tr(@lang, "Operator feedback", "操作反馈") %></p>
+              <h3 class="ribbon-title"><%= operator_feedback_title(@action_feedback, @lang) %></h3>
+              <p class="ribbon-copy"><%= operator_feedback_copy(@action_feedback, @status, @lang) %></p>
             </article>
 
-            <article class="metric-card">
-              <p class="metric-label"><%= tr(@lang, "Runtime", "运行时长") %></p>
-              <p class="metric-value numeric"><%= format_runtime_seconds(total_runtime_seconds(@runtime_payload, @now)) %></p>
-              <p class="metric-detail"><%= tr(@lang, "Total Codex runtime across completed and active sessions.", "已完成与进行中的会话累计运行时长。") %></p>
+            <article class="ribbon-card">
+              <p class="metric-label"><%= tr(@lang, "Delivery pulse", "交付脉搏") %></p>
+              <h3 class="ribbon-title"><%= delivery_route_label(field(@status, "delivery"), @lang) %></h3>
+              <p class="ribbon-copy"><%= delivery_ci_detail(field(@status, "delivery"), @lang) %></p>
             </article>
           </section>
 
-          <div class="section-stack">
-            <section>
-              <h3 class="section-subtitle"><%= tr(@lang, "Running sessions", "运行会话") %></h3>
-              <%= if normalized_runtime_entries(field(@runtime_payload, "running")) == [] do %>
-                <p class="empty-state"><%= tr(@lang, "No active sessions.", "当前没有活跃会话。") %></p>
-              <% else %>
-                <div class="table-wrap">
-                  <table class="data-table">
-                    <thead>
-                      <tr>
-                        <th><%= tr(@lang, "Issue", "议题") %></th>
-                        <th><%= tr(@lang, "State", "状态") %></th>
-                        <th><%= tr(@lang, "Session", "会话") %></th>
-                        <th><%= tr(@lang, "Runtime / turns", "运行时长 / 轮次") %></th>
-                        <th><%= tr(@lang, "Codex update", "Codex 更新") %></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr :for={entry <- normalized_runtime_entries(field(@runtime_payload, "running"))}>
-                        <td>
-                          <button type="button" class="issue-link issue-button" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
-                            <%= field(entry, "issue_identifier") %>
-                          </button>
-                        </td>
-                        <td><span class={state_badge_class(field(entry, "state"))}><%= field(entry, "state") || tr(@lang, "n/a", "未提供") %></span></td>
-                        <td class="mono"><%= field(entry, "session_id") || tr(@lang, "n/a", "未提供") %></td>
-                        <td class="numeric"><%= format_runtime_and_turns(field(entry, "started_at"), field(entry, "turn_count"), @now) %></td>
-                        <td><%= field(entry, "last_message") || field(entry, "last_event") || tr(@lang, "n/a", "未提供") %></td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              <% end %>
-            </section>
-
-            <section>
-              <h3 class="section-subtitle"><%= tr(@lang, "Retry queue", "重试队列") %></h3>
-              <%= if normalized_runtime_entries(field(@runtime_payload, "retrying")) == [] do %>
-                <p class="empty-state"><%= tr(@lang, "No issues are currently backing off.", "当前没有议题在退避重试。") %></p>
-              <% else %>
-                <div class="table-wrap">
-                  <table class="data-table">
-                    <thead>
-                      <tr>
-                        <th><%= tr(@lang, "Issue", "议题") %></th>
-                        <th><%= tr(@lang, "Attempt", "尝试") %></th>
-                        <th><%= tr(@lang, "Due at", "预计重试时间") %></th>
-                        <th><%= tr(@lang, "Error", "错误") %></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr :for={entry <- normalized_runtime_entries(field(@runtime_payload, "retrying"))}>
-                        <td>
-                          <button type="button" class="issue-link issue-button" phx-click="select_issue" phx-value-issue={field(entry, "issue_identifier")}>
-                            <%= field(entry, "issue_identifier") %>
-                          </button>
-                        </td>
-                        <td><%= field(entry, "attempt") || tr(@lang, "n/a", "未提供") %></td>
-                        <td class="mono"><%= field(entry, "due_at") || tr(@lang, "n/a", "未提供") %></td>
-                        <td><%= field(entry, "error") || tr(@lang, "n/a", "未提供") %></td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              <% end %>
-            </section>
-          </div>
-        <% end %>
-      </section>
-
-      <section class="section-card">
-        <div class="section-header">
-          <div>
-            <h2 class="section-title"><%= tr(@lang, "Controls", "控制面板") %></h2>
-            <p class="section-copy"><%= tr(@lang, "Load an issue from the bridge, tune refresh, and include doctor/workpad/log data on demand.", "从 bridge 加载议题，按需查看 doctor、workpad、日志，并调整刷新策略。") %></p>
-          </div>
-          <button type="button" class="subtle-button" phx-click="refresh"><%= tr(@lang, "Refresh now", "立即刷新") %></button>
-        </div>
-
-        <form id="issue-query-form" class="toolbar-form" phx-submit="load_issue">
-          <div :if={selected_profile(@profiles, @selected_profile)} class="toolbar-field toolbar-field-full">
-            <span><%= tr(@lang, "Execution profile", "执行模板") %></span>
-            <div class="inspector-card">
-              <div class="inspector-card-head">
-                <h4><%= profile_label(selected_profile(@profiles, @selected_profile), @lang) %></h4>
-              </div>
-              <p class="section-copy">
-                <%= profile_description(selected_profile(@profiles, @selected_profile), @lang) %>
-              </p>
-            </div>
-          </div>
-
-          <label class="toolbar-field">
-            <span><%= tr(@lang, "Issue key", "议题编号") %></span>
-            <input class="form-input" type="text" name="issue" value={@issue_query} placeholder={tr(@lang, "For example PROJ-123", "例如 PROJ-123")} />
-          </label>
-
-          <label class="toolbar-field">
-            <span><%= tr(@lang, "Branch override", "分支覆盖") %></span>
-            <input class="form-input" type="text" name="branch" value={@branch_override} placeholder={tr(@lang, "Optional", "可选")} />
-          </label>
-
-          <label class="toolbar-field">
-            <span><%= tr(@lang, "Events", "事件条数") %></span>
-            <input class="form-input" type="number" min="1" max="50" name="events" value={@events_limit} />
-          </label>
-
-          <label class="toolbar-field">
-            <span><%= tr(@lang, "Logs", "日志范围") %></span>
-            <select class="form-input" name="include_logs">
-              <option :for={{label, value} <- @log_options} value={value} selected={value == @include_logs}>
-                <%= label %>
-              </option>
-            </select>
-          </label>
-
-          <label class="toolbar-field">
-            <span><%= tr(@lang, "Auto refresh", "自动刷新") %></span>
-            <select class="form-input" name="refresh_interval" phx-change="set_refresh_interval">
-              <option :for={{label, value} <- @refresh_options} value={value} selected={refresh_selected?(value, @refresh_interval_ms)}>
-                <%= label %>
-              </option>
-            </select>
-          </label>
-
-          <label class="checkbox-field">
-            <input type="checkbox" name="doctor" value="true" checked={@include_doctor} />
-            <span><%= tr(@lang, "Include doctor", "包含 doctor") %></span>
-          </label>
-
-          <label class="checkbox-field">
-            <input type="checkbox" name="workpad" value="true" checked={@include_workpad} />
-            <span><%= tr(@lang, "Include workpad", "包含 workpad") %></span>
-          </label>
-
-          <button type="submit" class="subtle-button subtle-button-primary"><%= tr(@lang, "Load issue", "加载议题") %></button>
-        </form>
-      </section>
-
-      <div class="console-grid">
-        <section class="section-card">
-          <div class="section-header">
-            <div>
-              <h2 class="section-title"><%= tr(@lang, "Recent runs", "最近运行") %></h2>
-              <p class="section-copy"><%= tr(@lang, "Project-local bridge state from `/runs`.", "来自项目本地 `/runs` 的 bridge 运行态。") %></p>
-            </div>
-          </div>
-
-          <%= if @runs == [] do %>
-            <p class="empty-state"><%= tr(@lang, "The bridge has not returned any recent runs yet.", "bridge 还没有返回最近运行数据。") %></p>
-          <% else %>
-            <div class="run-board">
-              <article :for={run <- @runs} class="run-card">
-                <div class="run-card-head">
-                  <button
-                    type="button"
-                    class="issue-link issue-button run-card-issue"
-                    phx-click="select_issue"
-                    phx-value-issue={field(run, "issue")}
-                  >
-                    <%= field(run, "issue") %>
-                  </button>
-                  <span class={state_badge_class(field(run, "phase"))}><%= field(run, "phase") || tr(@lang, "n/a", "未提供") %></span>
-                </div>
-                <p class="run-card-summary"><%= recent_run_summary(run, @lang) %></p>
-                <div class="run-card-meta">
-                  <span><%= tr(@lang, "Route", "路由") %>: <strong><%= route_hint_text(run, @lang) %></strong></span>
-                  <span class="mono"><%= field(run, "updated_at") || tr(@lang, "n/a", "未提供") %></span>
-                </div>
-              </article>
-            </div>
-          <% end %>
-        </section>
-
-        <section class="section-card">
+          <section class="section-card">
           <div class="section-header">
             <div>
               <h2 class="section-title"><%= tr(@lang, "Run detail", "运行详情") %></h2>
@@ -581,7 +582,10 @@ defmodule SymphonyElixirWeb.ConsoleLive do
           </div>
 
           <%= if is_nil(@status) do %>
-            <p class="empty-state"><%= tr(@lang, "Load an issue to inspect current status, checks, and actions.", "先加载一个议题，才能查看当前状态、检查结果和控制动作。") %></p>
+            <div class="empty-stage">
+              <p class="empty-state empty-state-strong"><%= tr(@lang, "Awaiting dispatch.", "等待派发。") %></p>
+              <p class="section-copy"><%= tr(@lang, "Load an issue from the left sidebar to turn this page into a live execution stage.", "先从左侧加载一个议题，这里才会变成实时执行主舞台。") %></p>
+            </div>
           <% else %>
             <section class="mission-strip">
               <div class="section-header section-header-tight">
@@ -651,10 +655,121 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               </article>
             </div>
 
-            <div class="section-stack">
-              <section>
-                <h3 class="section-subtitle"><%= tr(@lang, "Delivery", "交付状态") %></h3>
-                <div class="detail-grid">
+            <section class={command_deck_class(@action_feedback)}>
+              <div class="command-deck-grid">
+                <div class="command-deck-main">
+                  <h3 class="section-subtitle"><%= tr(@lang, "Operator command", "操作指令") %></h3>
+                  <article class={guidance_callout_class(@status)}>
+                    <p class="guidance-eyebrow"><%= tr(@lang, "What the cockpit suggests next", "控制台建议的下一步") %></p>
+                    <p class="guidance-copy"><%= action_guidance(@status, @lang) %></p>
+                  </article>
+                  <%= if @action_feedback do %>
+                    <div class={action_feedback_class(@action_feedback)}>
+                      <span class="feedback-icon"><%= action_feedback_icon(@action_feedback, @lang) %></span>
+                      <strong><%= field(@action_feedback, "label") %></strong>
+                      <span><%= field(@action_feedback, "message") %></span>
+                      <span :if={field(@action_feedback, "at")} class="mono"><%= field(@action_feedback, "at") %></span>
+                    </div>
+                  <% end %>
+                  <form id="instruction-form" class="instruction-form" phx-submit="instruction_action">
+                    <label class="toolbar-field toolbar-field-full">
+                      <span><%= tr(@lang, "Operator instruction", "操作指令") %></span>
+                      <textarea
+                        class="form-input form-textarea"
+                        name="message"
+                        placeholder={instruction_placeholder(@profiles, @selected_profile, @lang)}
+                      ><%= @instruction_message %></textarea>
+                    </label>
+
+                    <label class="checkbox-field">
+                      <input type="checkbox" name="sync_linear" value="true" checked={@sync_linear} />
+                      <span><%= tr(@lang, "Sync to Linear", "同步到 Linear") %></span>
+                    </label>
+
+                    <div class="action-row action-row-primary">
+                      <button type="submit" name="intent" value="steer" class="subtle-button subtle-button-primary" disabled={action_disabled?(@status, "steer")}><%= tr(@lang, "Steer run", "引导运行") %></button>
+                      <button type="submit" name="intent" value="append" class="subtle-button" disabled={action_disabled?(@status, "instruction")}><%= tr(@lang, "Queue instruction", "排队指令") %></button>
+                    </div>
+                  </form>
+                </div>
+
+                <div class="command-deck-side">
+                  <h4 class="guidance-eyebrow"><%= tr(@lang, "Run controls", "运行控制") %></h4>
+                  <div class="action-row action-row-secondary">
+                    <button id="pause-run" type="button" class="subtle-button" phx-click="pause" disabled={action_disabled?(@status, "pause")}><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
+                    <button id="resume-run" type="button" class="subtle-button" phx-click="resume" disabled={action_disabled?(@status, "resume")}><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
+                    <button id="restart-run" type="button" class="subtle-button" phx-click="restart" disabled={action_disabled?(@status, "restart")}><%= tr(@lang, "Restart run", "重启运行") %></button>
+                    <button id="cancel-run" type="button" class="subtle-button subtle-button-danger" phx-click="cancel" disabled={action_disabled?(@status, "cancel")}><%= tr(@lang, "Cancel current run", "取消当前运行") %></button>
+                    <button id="hold-run" type="button" class="subtle-button" phx-click="hold" disabled={action_disabled?(@status, "hold")}><%= tr(@lang, "Hold issue", "挂起议题") %></button>
+                    <button id="release-run" type="button" class="subtle-button" phx-click="release" disabled={action_disabled?(@status, "release")}><%= tr(@lang, "Release hold", "解除挂起") %></button>
+                    <button id="clear-instruction" type="button" class="subtle-button" phx-click="clear_instruction" disabled={action_disabled?(@status, "clear_instruction")}><%= tr(@lang, "Clear instruction", "清除指令") %></button>
+                  </div>
+                  <p class="section-copy action-copy">
+                    <%= tr(@lang, "Queue instruction stores operator intent for the next restart. Steer run stores it and requests the restart path immediately.", "排队指令会把操作员意图留给下一次重启应用；引导运行会同时落下这条指令并立即请求重启路径。") %>
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <div class="execution-stage-grid">
+              <section class="section-card">
+                <div class="section-stack">
+                  <section>
+                    <h3 class="section-subtitle"><%= tr(@lang, "Telemetry", "执行遥测") %></h3>
+                    <div class="detail-grid">
+                      <article class="metric-card">
+                        <p class="metric-label"><%= tr(@lang, "Issue", "议题") %></p>
+                        <p class="metric-value"><%= field(@status, "issue") %></p>
+                        <p class="metric-detail"><%= field(@status, "summary") || tr(@lang, "n/a", "未提供") %></p>
+                      </article>
+
+                      <article class="metric-card">
+                        <p class="metric-label"><%= tr(@lang, "Phase", "阶段") %></p>
+                        <p class="metric-value"><%= field(@status, "phase") || tr(@lang, "n/a", "未提供") %></p>
+                        <p class="metric-detail"><%= tr(@lang, "Route hint", "路由提示") %>：<%= field(@status, "route_hint") || tr(@lang, "n/a", "未提供") %></p>
+                      </article>
+
+                      <article class="metric-card">
+                        <p class="metric-label"><%= tr(@lang, "Branch / commit", "分支 / 提交") %></p>
+                        <p class="metric-value mono"><%= field(@status, "branch") || tr(@lang, "n/a", "未提供") %></p>
+                        <p class="metric-detail mono"><%= field(@status, "commit") || tr(@lang, "n/a", "未提供") %></p>
+                      </article>
+
+                      <article class="metric-card">
+                        <p class="metric-label"><%= tr(@lang, "Next", "下一步") %></p>
+                        <p class="metric-value"><%= field(@status, "next") || tr(@lang, "n/a", "未提供") %></p>
+                        <p class="metric-detail"><%= tr(@lang, "Updated", "更新时间") %>：<span class="mono"><%= field(@status, "updated_at") || tr(@lang, "n/a", "未提供") %></span></p>
+                      </article>
+
+                      <article class="metric-card">
+                        <p class="metric-label"><%= tr(@lang, "Runtime", "运行时") %></p>
+                        <p class="metric-value"><%= runtime_label(field(@status, "runtime_control"), @lang) %></p>
+                        <p class="metric-detail"><%= runtime_reason(field(@status, "runtime_control"), @lang) %></p>
+                      </article>
+
+                      <article class="metric-card">
+                        <p class="metric-label"><%= tr(@lang, "Issue control", "议题控制") %></p>
+                        <p class="metric-value"><%= issue_control_label(field(@status, "issue_control"), @lang) %></p>
+                        <p class="metric-detail"><%= issue_control_reason(field(@status, "issue_control"), @lang) %></p>
+                      </article>
+
+                      <article class="metric-card">
+                        <p class="metric-label"><%= tr(@lang, "Live session", "实时会话") %></p>
+                        <p class="metric-value mono"><%= runtime_issue_label(field(@status, "runtime_issue"), @lang) %></p>
+                        <p class="metric-detail"><%= runtime_issue_detail(field(@status, "runtime_issue"), @lang) %></p>
+                      </article>
+
+                      <article class="metric-card">
+                        <p class="metric-label"><%= tr(@lang, "Operator instruction", "操作指令") %></p>
+                        <p class="metric-value"><%= operator_instruction_label(@status, @lang) %></p>
+                        <p class="metric-detail"><%= operator_instruction_detail(@status, @lang) %></p>
+                      </article>
+                    </div>
+                  </section>
+
+                  <section>
+                    <h3 class="section-subtitle"><%= tr(@lang, "Delivery", "交付状态") %></h3>
+                    <div class="detail-grid">
                   <article class="metric-card">
                     <p class="metric-label"><%= tr(@lang, "Route", "交付路线") %></p>
                     <p class="metric-value"><%= delivery_route_label(field(@status, "delivery"), @lang) %></p>
@@ -688,133 +803,48 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                     <p class="metric-value"><%= delivery_automation_label(field(@status, "delivery"), @lang) %></p>
                     <p class="metric-detail"><%= delivery_automation_detail(field(@status, "delivery"), @lang) %></p>
                   </article>
+                    </div>
+                  </section>
+
+                  <section>
+                    <h3 class="section-subtitle"><%= tr(@lang, "Checks", "检查项") %></h3>
+                    <div class="table-wrap">
+                      <table class="data-table">
+                        <thead>
+                          <tr>
+                            <th><%= tr(@lang, "Check", "检查项") %></th>
+                            <th><%= tr(@lang, "Status", "状态") %></th>
+                            <th><%= tr(@lang, "Summary", "摘要") %></th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr :for={{name, payload} <- normalized_checks(field(@status, "checks"))}>
+                            <td><%= name %></td>
+                            <td><span class={state_badge_class(field(payload, "status"))}><%= field(payload, "status") || tr(@lang, "n/a", "未提供") %></span></td>
+                            <td><%= field(payload, "summary") || tr(@lang, "n/a", "未提供") %></td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </section>
                 </div>
               </section>
 
-              <section>
-                <h3 class="section-subtitle"><%= tr(@lang, "Checks", "检查项") %></h3>
-                <div class="table-wrap">
-                  <table class="data-table">
-                    <thead>
-                      <tr>
-                        <th><%= tr(@lang, "Check", "检查项") %></th>
-                        <th><%= tr(@lang, "Status", "状态") %></th>
-                        <th><%= tr(@lang, "Summary", "摘要") %></th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr :for={{name, payload} <- normalized_checks(field(@status, "checks"))}>
-                        <td><%= name %></td>
-                        <td><span class={state_badge_class(field(payload, "status"))}><%= field(payload, "status") || tr(@lang, "n/a", "未提供") %></span></td>
-                        <td><%= field(payload, "summary") || tr(@lang, "n/a", "未提供") %></td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-
-              <section>
-                <h3 class="section-subtitle"><%= tr(@lang, "Timeline", "事件时间线") %></h3>
-                <%= if normalized_events(field(@status, "latest_events")) == [] do %>
-                  <p class="empty-state"><%= tr(@lang, "No events returned.", "当前没有返回事件。") %></p>
-                <% else %>
-                  <div class="timeline-list">
-                    <article :for={event <- normalized_events(field(@status, "latest_events"))} class="timeline-item">
-                      <div class="timeline-head">
-                        <span class={state_badge_class(field(event, "type"))}><%= humanize_token(field(event, "type"), @lang) || tr(@lang, "n/a", "未提供") %></span>
-                        <span class="timeline-time mono"><%= field(event, "ts") || tr(@lang, "n/a", "未提供") %></span>
-                      </div>
-                      <p class="timeline-summary"><%= field(event, "summary") || tr(@lang, "n/a", "未提供") %></p>
-                      <p :if={present?(field(event, "actor"))} class="timeline-meta">
-                        <%= tr(@lang, "Actor", "执行方") %>：<span class="mono"><%= field(event, "actor") %></span>
-                      </p>
-                    </article>
-                  </div>
-                <% end %>
-              </section>
-
-              <section>
-                <h3 class="section-subtitle"><%= tr(@lang, "Instruction history", "指令历史") %></h3>
-                <%= if instruction_history(field(@status, "operator_instruction_history")) == [] do %>
-                  <p class="empty-state"><%= tr(@lang, "No completed instruction transitions yet.", "当前还没有已完成的指令状态迁移。") %></p>
-                <% else %>
-                  <div class="timeline-list">
-                    <article :for={instruction <- instruction_history(field(@status, "operator_instruction_history"))} class="timeline-item">
-                      <div class="timeline-head">
-                        <span class={state_badge_class(field(instruction, "delivery_state"))}><%= instruction_state_text(instruction, @lang) %></span>
-                        <span class="timeline-time mono"><%= instruction_state_timestamp(instruction) || tr(@lang, "n/a", "未提供") %></span>
-                      </div>
-                      <p class="timeline-summary"><%= field(instruction, "message") || tr(@lang, "n/a", "未提供") %></p>
-                      <p class="timeline-meta"><%= instruction_history_meta(instruction, @lang) %></p>
-                    </article>
-                  </div>
-                <% end %>
-              </section>
-
-              <section>
-                <h3 class="section-subtitle"><%= tr(@lang, "Actions", "控制动作") %></h3>
-                <article class={guidance_callout_class(@status)}>
-                  <p class="guidance-eyebrow"><%= tr(@lang, "What the cockpit suggests next", "控制台建议的下一步") %></p>
-                  <p class="guidance-copy"><%= action_guidance(@status, @lang) %></p>
-                </article>
-                <%= if @action_feedback do %>
-                  <div class={action_feedback_class(@action_feedback)}>
-                    <span class="feedback-icon"><%= action_feedback_icon(@action_feedback, @lang) %></span>
-                    <strong><%= field(@action_feedback, "label") %></strong>
-                    <span><%= field(@action_feedback, "message") %></span>
-                    <span :if={field(@action_feedback, "at")} class="mono"><%= field(@action_feedback, "at") %></span>
-                  </div>
-                <% end %>
-                <div class="action-row">
-                  <button id="pause-run" type="button" class="subtle-button" phx-click="pause" disabled={action_disabled?(@status, "pause")}><%= tr(@lang, "Pause intake", "暂停 intake") %></button>
-                  <button id="resume-run" type="button" class="subtle-button" phx-click="resume" disabled={action_disabled?(@status, "resume")}><%= tr(@lang, "Resume intake", "恢复 intake") %></button>
-                  <button id="cancel-run" type="button" class="subtle-button" phx-click="cancel" disabled={action_disabled?(@status, "cancel")}><%= tr(@lang, "Cancel current run", "取消当前运行") %></button>
-                  <button id="hold-run" type="button" class="subtle-button" phx-click="hold" disabled={action_disabled?(@status, "hold")}><%= tr(@lang, "Hold issue", "挂起议题") %></button>
-                  <button id="release-run" type="button" class="subtle-button" phx-click="release" disabled={action_disabled?(@status, "release")}><%= tr(@lang, "Release hold", "解除挂起") %></button>
-                  <button id="restart-run" type="button" class="subtle-button" phx-click="restart" disabled={action_disabled?(@status, "restart")}><%= tr(@lang, "Restart run", "重启运行") %></button>
-                  <button id="clear-instruction" type="button" class="subtle-button" phx-click="clear_instruction" disabled={action_disabled?(@status, "clear_instruction")}><%= tr(@lang, "Clear instruction", "清除指令") %></button>
-                </div>
-
-                <form id="instruction-form" class="instruction-form" phx-submit="instruction_action">
-                  <label class="toolbar-field toolbar-field-full">
-                    <span><%= tr(@lang, "Operator instruction", "操作指令") %></span>
-                    <textarea
-                      class="form-input form-textarea"
-                      name="message"
-                      placeholder={instruction_placeholder(@profiles, @selected_profile, @lang)}
-                    ><%= @instruction_message %></textarea>
-                  </label>
-
-                  <label class="checkbox-field">
-                    <input type="checkbox" name="sync_linear" value="true" checked={@sync_linear} />
-                    <span><%= tr(@lang, "Sync to Linear", "同步到 Linear") %></span>
-                  </label>
-
-                  <div class="action-row">
-                    <button type="submit" name="intent" value="append" class="subtle-button subtle-button-primary" disabled={action_disabled?(@status, "instruction")}><%= tr(@lang, "Append instruction", "追加指令") %></button>
-                    <button id="steer-run" type="submit" name="intent" value="steer" class="subtle-button" disabled={action_disabled?(@status, "steer")}><%= tr(@lang, "Steer run", "引导运行") %></button>
-                  </div>
-                  <p class="section-copy action-copy">
-                    <%= tr(@lang, "Append queues operator input for the next restart. Steer queues it and immediately requests a restart path.", "追加指令只会排队等待下次重启应用；引导运行会排队这条指令并立即请求重启路径。") %>
-                  </p>
-                </form>
-              </section>
-
-              <section>
+              <section class="section-card detail-terminal-card">
                 <div class="section-header section-header-tight">
                   <div>
-                    <h3 class="section-subtitle"><%= tr(@lang, "Inspector", "数据面板") %></h3>
+                    <h3 class="section-subtitle"><%= tr(@lang, "Inspector terminal", "终端面板") %></h3>
                     <p class="section-copy"><%= tr(@lang, "Switch between workpad context, doctor output, and split log streams.", "在 workpad、doctor 输出和拆分日志流之间切换。") %></p>
                   </div>
                 </div>
 
-                <div class="panel-tab-row">
+                <div class="panel-tab-row panel-tab-row-terminal">
                   <button type="button" class={panel_button_class(@detail_panel, "workpad")} phx-click="set_detail_panel" phx-value-panel="workpad"><%= tr(@lang, "Workpad", "Workpad") %></button>
                   <button type="button" class={panel_button_class(@detail_panel, "doctor")} phx-click="set_detail_panel" phx-value-panel="doctor"><%= tr(@lang, "Doctor", "Doctor") %></button>
                   <button type="button" class={panel_button_class(@detail_panel, "logs")} phx-click="set_detail_panel" phx-value-panel="logs"><%= tr(@lang, "Logs", "日志流") %></button>
                 </div>
 
-                <div :if={@detail_panel == "workpad"} class="inspector-stack">
+                <div :if={@detail_panel == "workpad"} class="inspector-stack inspector-stack-terminal">
                   <%= if workpad_sections(field(@status, "workpad")) == [] do %>
                     <p class="empty-state"><%= tr(@lang, "No workpad data returned.", "当前没有返回 workpad 数据。") %></p>
                   <% else %>
@@ -827,7 +857,7 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                   <% end %>
                 </div>
 
-                <div :if={@detail_panel == "doctor"} class="inspector-stack">
+                <div :if={@detail_panel == "doctor"} class="inspector-stack inspector-stack-terminal">
                   <%= if doctor_rows(field(@status, "doctor")) == [] do %>
                     <p class="empty-state"><%= tr(@lang, "No doctor output returned.", "当前没有返回 doctor 输出。") %></p>
                   <% else %>
@@ -852,16 +882,15 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                   <% end %>
                 </div>
 
-                <div :if={@detail_panel == "logs"} class="inspector-stack">
+                <div :if={@detail_panel == "logs"} class="inspector-stack inspector-stack-terminal">
                   <%= if not has_console_streams?(@status) do %>
                     <p class="empty-state"><%= tr(@lang, "No logs returned. Reload the issue with agent or raw logs enabled.", "当前没有返回日志。请重新加载议题并启用执行日志或原始日志。") %></p>
                   <% else %>
-                    <div class="stream-grid">
+                    <div class="stream-grid stream-grid-terminal">
                       <article class="inspector-card stream-card">
                         <div class="inspector-card-head">
                           <h4><%= tr(@lang, "Agent stream", "执行流") %></h4>
                         </div>
-                        <p class="section-copy"><%= tr(@lang, "Latest agent-facing execution output.", "最近的 agent 执行输出。") %></p>
                         <%= if content = agent_log_content(field(@status, "logs")) do %>
                           <pre class="code-panel"><%= content %></pre>
                         <% else %>
@@ -873,7 +902,6 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                         <div class="inspector-card-head">
                           <h4><%= tr(@lang, "Decision stream", "决策流") %></h4>
                         </div>
-                        <p class="section-copy"><%= tr(@lang, "Recent orchestration events, summarized as decision traces.", "最近的编排事件，整理为决策轨迹。") %></p>
                         <%= if content = decision_log_content(field(@status, "latest_events")) do %>
                           <pre class="code-panel"><%= content %></pre>
                         <% else %>
@@ -882,14 +910,13 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                       </article>
 
                       <article class="inspector-card stream-card">
-                      <div class="inspector-card-head">
+                        <div class="inspector-card-head">
                           <h4><%= tr(@lang, "Raw stream", "原始流") %></h4>
-                      </div>
-                        <p class="section-copy"><%= tr(@lang, "Raw process/file output from the bridge adapter.", "来自 bridge adapter 的原始进程/文件输出。") %></p>
+                        </div>
                         <%= if raw_log_streams(field(@status, "logs")) == [] do %>
                           <p class="empty-state"><%= tr(@lang, "No raw log returned.", "当前没有返回原始日志。") %></p>
                         <% else %>
-                          <div :if={length(raw_log_streams(field(@status, "logs"))) > 1} class="panel-tab-row">
+                          <div :if={length(raw_log_streams(field(@status, "logs"))) > 1} class="panel-tab-row panel-tab-row-terminal">
                             <button
                               :for={stream <- raw_log_streams(field(@status, "logs"))}
                               type="button"
@@ -911,8 +938,49 @@ defmodule SymphonyElixirWeb.ConsoleLive do
                 </div>
               </section>
             </div>
+
+            <div class="execution-timeline-grid">
+              <section class="section-card">
+                <h3 class="section-subtitle"><%= tr(@lang, "Timeline", "事件时间线") %></h3>
+                <%= if normalized_events(field(@status, "latest_events")) == [] do %>
+                  <p class="empty-state"><%= tr(@lang, "No events returned.", "当前没有返回事件。") %></p>
+                <% else %>
+                  <div class="timeline-list">
+                    <article :for={event <- normalized_events(field(@status, "latest_events"))} class="timeline-item">
+                      <div class="timeline-head">
+                        <span class={state_badge_class(field(event, "type"))}><%= humanize_token(field(event, "type"), @lang) || tr(@lang, "n/a", "未提供") %></span>
+                        <span class="timeline-time mono"><%= field(event, "ts") || tr(@lang, "n/a", "未提供") %></span>
+                      </div>
+                      <p class="timeline-summary"><%= field(event, "summary") || tr(@lang, "n/a", "未提供") %></p>
+                      <p :if={present?(field(event, "actor"))} class="timeline-meta">
+                        <%= tr(@lang, "Actor", "执行方") %>：<span class="mono"><%= field(event, "actor") %></span>
+                      </p>
+                    </article>
+                  </div>
+                <% end %>
+              </section>
+
+              <section class="section-card">
+                <h3 class="section-subtitle"><%= tr(@lang, "Instruction history", "指令历史") %></h3>
+                <%= if instruction_history(field(@status, "operator_instruction_history")) == [] do %>
+                  <p class="empty-state"><%= tr(@lang, "No completed instruction transitions yet.", "当前还没有已完成的指令状态迁移。") %></p>
+                <% else %>
+                  <div class="timeline-list">
+                    <article :for={instruction <- instruction_history(field(@status, "operator_instruction_history"))} class="timeline-item">
+                      <div class="timeline-head">
+                        <span class={state_badge_class(field(instruction, "delivery_state"))}><%= instruction_state_text(instruction, @lang) %></span>
+                        <span class="timeline-time mono"><%= instruction_state_timestamp(instruction) || tr(@lang, "n/a", "未提供") %></span>
+                      </div>
+                      <p class="timeline-summary"><%= field(instruction, "message") || tr(@lang, "n/a", "未提供") %></p>
+                      <p class="timeline-meta"><%= instruction_history_meta(instruction, @lang) %></p>
+                    </article>
+                  </div>
+                <% end %>
+              </section>
+            </div>
           <% end %>
-        </section>
+          </section>
+        </main>
       </div>
     </section>
     """
@@ -1358,6 +1426,14 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
       true ->
         "guidance-callout guidance-callout-neutral"
+    end
+  end
+
+  defp command_deck_class(feedback) do
+    case field(feedback, "kind") do
+      "error" -> "command-deck command-deck-error"
+      "success" -> "command-deck command-deck-success"
+      _ -> "command-deck"
     end
   end
 
