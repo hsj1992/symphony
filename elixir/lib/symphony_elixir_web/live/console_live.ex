@@ -268,6 +268,10 @@ defmodule SymphonyElixirWeb.ConsoleLive do
             <p class="hero-copy">
               <%= tr(@lang, "Runtime observability, bridge-backed issue control, and delivery state now live on one operator page.", "运行态观测、bridge 驱动的议题控制、以及交付状态现在收敛在同一个操作台页面。") %>
             </p>
+            <div class="hero-pulse-row">
+              <span class="pulse-chip pulse-chip-live"><span class="pulse-dot"></span><%= heartbeat_label(@now, @lang) %></span>
+              <span class="pulse-chip"><%= tr(@lang, "Runtime activity", "运行活跃度") %> <strong><%= runtime_activity_percent(@runtime_payload) %>%</strong></span>
+            </div>
           </div>
 
           <div class="status-stack">
@@ -328,6 +332,29 @@ defmodule SymphonyElixirWeb.ConsoleLive do
         </section>
       <% end %>
 
+      <section class="cockpit-ribbon">
+        <article class="ribbon-card ribbon-card-runtime">
+          <p class="metric-label"><%= tr(@lang, "Runtime pulse", "运行脉搏") %></p>
+          <h3 class="ribbon-title"><%= heartbeat_label(@now, @lang) %></h3>
+          <p class="ribbon-copy"><%= heartbeat_copy(@runtime_payload, @lang) %></p>
+          <div class="activity-meter">
+            <span style={meter_width_style(runtime_activity_percent(@runtime_payload))}></span>
+          </div>
+        </article>
+
+        <article class="ribbon-card">
+          <p class="metric-label"><%= tr(@lang, "Issue spotlight", "当前任务焦点") %></p>
+          <h3 class="ribbon-title mono"><%= spotlight_title(@status, @lang) %></h3>
+          <p class="ribbon-copy"><%= spotlight_summary(@status, @lang) %></p>
+        </article>
+
+        <article class="ribbon-card">
+          <p class="metric-label"><%= tr(@lang, "Operator feedback", "操作反馈") %></p>
+          <h3 class="ribbon-title"><%= operator_feedback_title(@action_feedback, @lang) %></h3>
+          <p class="ribbon-copy"><%= operator_feedback_copy(@action_feedback, @status, @lang) %></p>
+        </article>
+      </section>
+
       <section class="section-card">
         <div class="section-header">
           <div>
@@ -344,12 +371,14 @@ defmodule SymphonyElixirWeb.ConsoleLive do
               <p class="metric-label"><%= tr(@lang, "Running", "运行中") %></p>
               <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "running") || 0 %></p>
               <p class="metric-detail"><%= tr(@lang, "Active issue sessions in the current runtime.", "当前 runtime 中的活跃议题会话数。") %></p>
+              <div class="activity-meter"><span style={meter_width_style(min((field(field(@runtime_payload, "counts"), "running") || 0) * 50, 100))}></span></div>
             </article>
 
             <article class="metric-card">
               <p class="metric-label"><%= tr(@lang, "Retrying", "重试队列") %></p>
               <p class="metric-value numeric"><%= field(field(@runtime_payload, "counts"), "retrying") || 0 %></p>
               <p class="metric-detail"><%= tr(@lang, "Issues waiting for the next retry window.", "等待下一次重试窗口的议题数。") %></p>
+              <div class="activity-meter"><span style={meter_width_style(min((field(field(@runtime_payload, "counts"), "retrying") || 0) * 34, 100))}></span></div>
             </article>
 
             <article class="metric-card">
@@ -518,36 +547,27 @@ defmodule SymphonyElixirWeb.ConsoleLive do
           </div>
 
           <%= if @runs == [] do %>
-        <p class="empty-state"><%= tr(@lang, "The bridge has not returned any recent runs yet.", "bridge 还没有返回最近运行数据。") %></p>
+            <p class="empty-state"><%= tr(@lang, "The bridge has not returned any recent runs yet.", "bridge 还没有返回最近运行数据。") %></p>
           <% else %>
-            <div class="table-wrap">
-              <table class="data-table">
-                <thead>
-                  <tr>
-                    <th><%= tr(@lang, "Issue", "议题") %></th>
-                    <th><%= tr(@lang, "Phase", "阶段") %></th>
-                    <th><%= tr(@lang, "Route", "路由") %></th>
-                    <th><%= tr(@lang, "Updated", "更新时间") %></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr :for={run <- @runs}>
-                    <td>
-                      <button
-                        type="button"
-                        class="issue-link issue-button"
-                        phx-click="select_issue"
-                        phx-value-issue={field(run, "issue")}
-                      >
-                        <%= field(run, "issue") %>
-                      </button>
-                    </td>
-                    <td><span class={state_badge_class(field(run, "phase"))}><%= field(run, "phase") || tr(@lang, "n/a", "未提供") %></span></td>
-                    <td><%= field(run, "route_hint") || tr(@lang, "n/a", "未提供") %></td>
-                    <td class="mono"><%= field(run, "updated_at") || tr(@lang, "n/a", "未提供") %></td>
-                  </tr>
-                </tbody>
-              </table>
+            <div class="run-board">
+              <article :for={run <- @runs} class="run-card">
+                <div class="run-card-head">
+                  <button
+                    type="button"
+                    class="issue-link issue-button run-card-issue"
+                    phx-click="select_issue"
+                    phx-value-issue={field(run, "issue")}
+                  >
+                    <%= field(run, "issue") %>
+                  </button>
+                  <span class={state_badge_class(field(run, "phase"))}><%= field(run, "phase") || tr(@lang, "n/a", "未提供") %></span>
+                </div>
+                <p class="run-card-summary"><%= recent_run_summary(run, @lang) %></p>
+                <div class="run-card-meta">
+                  <span><%= tr(@lang, "Route", "路由") %>: <strong><%= route_hint_text(run, @lang) %></strong></span>
+                  <span class="mono"><%= field(run, "updated_at") || tr(@lang, "n/a", "未提供") %></span>
+                </div>
+              </article>
             </div>
           <% end %>
         </section>
@@ -563,6 +583,24 @@ defmodule SymphonyElixirWeb.ConsoleLive do
           <%= if is_nil(@status) do %>
             <p class="empty-state"><%= tr(@lang, "Load an issue to inspect current status, checks, and actions.", "先加载一个议题，才能查看当前状态、检查结果和控制动作。") %></p>
           <% else %>
+            <section class="mission-strip">
+              <div class="section-header section-header-tight">
+                <div>
+                  <h3 class="section-subtitle"><%= tr(@lang, "Mission progress", "任务进度") %></h3>
+                  <p class="section-copy"><%= tr(@lang, "Watch the selected issue move from queue to delivery without leaving the cockpit.", "在控制台里直接观察当前议题从排队到交付的推进。") %></p>
+                </div>
+              </div>
+              <div class="progress-track">
+                <article :for={step <- phase_progress_steps(@status, @lang)} class={phase_step_class(step.state)}>
+                  <div class="progress-dot"></div>
+                  <div>
+                    <p class="progress-title"><%= step.title %></p>
+                    <p class="progress-copy"><%= step.copy %></p>
+                  </div>
+                </article>
+              </div>
+            </section>
+
             <div class="detail-grid">
               <article class="metric-card">
                 <p class="metric-label"><%= tr(@lang, "Issue", "议题") %></p>
@@ -1200,6 +1238,114 @@ defmodule SymphonyElixirWeb.ConsoleLive do
       "error" -> "action-feedback action-feedback-error"
       _ -> "action-feedback action-feedback-success"
     end
+  end
+
+  defp heartbeat_label(now, "en"), do: "Heartbeat #{Calendar.strftime(now, "%H:%M:%S")}"
+  defp heartbeat_label(now, _lang), do: "心跳 #{Calendar.strftime(now, "%H:%M:%S")}"
+
+  defp heartbeat_copy(payload, lang) do
+    running = field(field(payload, "counts"), "running") || 0
+    retrying = field(field(payload, "counts"), "retrying") || 0
+
+    if running > 0 do
+      tr(lang, "#{running} active issue sessions are streaming live right now.", "当前有 #{running} 个议题会话正在实时运行。")
+    else
+      tr(lang, "No active issue session is streaming right now.", "当前没有议题会话正在实时运行。")
+    end <>
+      " " <>
+      tr(lang, "#{retrying} issues are queued for retry.", "#{retrying} 个议题正在等待重试。")
+  end
+
+  defp spotlight_title(nil, lang),
+    do: tr(lang, "Load an issue to focus the cockpit", "加载一个议题，让操作台聚焦到当前任务")
+
+  defp spotlight_title(status, _lang), do: field(status, "issue") || "n/a"
+
+  defp spotlight_summary(nil, lang),
+    do: tr(lang, "The cockpit will surface live runtime state, operator controls, and delivery progress once an issue is selected.", "选中议题后，这里会显示实时运行态、控制动作和交付进度。")
+
+  defp spotlight_summary(status, lang) do
+    summary = field(status, "summary") || tr(lang, "No summary returned.", "当前没有返回摘要。")
+    phase = field(status, "phase") || tr(lang, "n/a", "未提供")
+    route = field(status, "route_hint") || tr(lang, "n/a", "未提供")
+    "#{summary} " <> tr(lang, "Phase", "阶段") <> ": #{phase} · " <> tr(lang, "Route", "路由") <> ": #{route}"
+  end
+
+  defp operator_feedback_title(nil, lang),
+    do: tr(lang, "No operator action yet", "当前没有新的操作反馈")
+
+  defp operator_feedback_title(feedback, _lang), do: field(feedback, "label") || "n/a"
+
+  defp operator_feedback_copy(nil, status, lang) do
+    operator_instruction_detail(status, lang)
+  end
+
+  defp operator_feedback_copy(feedback, _status, _lang), do: field(feedback, "message") || "n/a"
+
+  defp phase_progress_steps(status, lang) do
+    current_index = phase_progress_index(status)
+
+    [
+      {1, tr(lang, "Queue", "排队"), tr(lang, "Issue is discovered and waiting to be worked.", "议题已被发现，等待进入执行。")},
+      {2, tr(lang, "Build", "实现"), tr(lang, "Worker is changing code or preparing the workspace.", "执行器正在改代码或准备工作区。")},
+      {3, tr(lang, "Validate", "验证"), tr(lang, "Checks, CI, and runtime verification are in progress.", "本地检查、CI 和运行验证进行中。")},
+      {4, tr(lang, "Review", "评审"), tr(lang, "Human review and operator feedback decide the next route.", "人工评审和操作员反馈决定下一步路由。")},
+      {5, tr(lang, "Ship", "交付"), tr(lang, "PR, merge automation, and completion state are converging.", "PR、合并自动化和完成状态正在收口。")}
+    ]
+    |> Enum.map(fn {index, title, copy} ->
+      state =
+        cond do
+          index < current_index -> "complete"
+          index == current_index -> "current"
+          true -> "upcoming"
+        end
+
+      %{index: index, title: title, copy: copy, state: state}
+    end)
+  end
+
+  defp phase_progress_index(nil), do: 1
+
+  defp phase_progress_index(status) do
+    phase = status |> field("phase") |> to_string() |> String.downcase()
+    route = status |> field("route_hint") |> to_string() |> String.downcase()
+    delivery = field(status, "delivery")
+    merged = field(field(delivery, "pull_request"), "merged") in [true, "true"]
+
+    cond do
+      merged or route == "done" -> 5
+      route in ["merging"] -> 5
+      route in ["human review"] or phase in ["handoff", "review"] -> 4
+      phase in ["validation"] or route in ["rework"] -> 3
+      phase in ["implementation", "sync"] -> 2
+      true -> 1
+    end
+  end
+
+  defp phase_step_class("complete"), do: "progress-step progress-step-complete"
+  defp phase_step_class("current"), do: "progress-step progress-step-current"
+  defp phase_step_class(_state), do: "progress-step progress-step-upcoming"
+
+  defp meter_width_style(percent) when is_integer(percent),
+    do: "width: #{min(max(percent, 0), 100)}%;"
+
+  defp runtime_activity_percent(payload) do
+    running = field(field(payload, "counts"), "running") || 0
+    retrying = field(field(payload, "counts"), "retrying") || 0
+    min(running * 45 + retrying * 15, 100)
+  end
+
+  defp recent_run_summary(run, lang) do
+    route = route_hint_text(run, lang)
+    updated = field(run, "updated_at") || tr(lang, "n/a", "未提供")
+    tr(lang, "Route", "路由") <> ": #{route} · " <> tr(lang, "Updated", "更新时间") <> ": #{updated}"
+  end
+
+  defp route_hint_text(run, lang) do
+    run
+    |> field("route_hint")
+    |> normalize_blank_text()
+    |> Kernel.||(tr(lang, "n/a", "未提供"))
   end
 
   defp normalized_checks(nil), do: []
@@ -1855,6 +2001,13 @@ defmodule SymphonyElixirWeb.ConsoleLive do
 
   defp blank_to_nil(value) when value in [nil, ""], do: nil
   defp blank_to_nil(value), do: value
+
+  defp normalize_blank_text(value) when is_binary(value) do
+    trimmed = String.trim(value)
+    if trimmed == "", do: nil, else: trimmed
+  end
+
+  defp normalize_blank_text(value), do: blank_to_nil(value)
 
   defp parse_integer(nil, fallback), do: fallback
 
